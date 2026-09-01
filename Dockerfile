@@ -1,23 +1,29 @@
 # ============================================================
 # Stage 1: Build the official PicoClaw binary + WebUI launcher
 # ============================================================
-FROM golang:1.25.11-bookworm AS picoclaw-builder
+FROM node:22.20-bookworm AS picoclaw-builder
 
 ARG PICOCLAW_VERSION=v0.3.1
-ARG NODE_VERSION=22.20.0
+ARG GO_VERSION=1.25.11
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git make gcc g++ python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# PicoClaw v0.3.1 requires Go 1.25.11+ and its WebUI build requires Node 22+.
-RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz \
-    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-    && rm -f /tmp/node.tar.xz \
-    && node --version \
+# PicoClaw v0.3.1 requires Go 1.25.11+.
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz \
+    && rm -rf /usr/local/go \
+    && tar -C /usr/local -xzf /tmp/go.tgz \
+    && rm -f /tmp/go.tgz
+ENV PATH="/usr/local/go/bin:/go/bin:${PATH}" \
+    GOPATH="/go" \
+    GOTOOLCHAIN="local"
+
+RUN node --version \
     && npm --version \
     && npm install -g pnpm@10.33.0 \
-    && pnpm --version
+    && pnpm --version \
+    && go version
 
 WORKDIR /src/picoclaw
 RUN git clone --depth 1 --branch "${PICOCLAW_VERSION}" https://github.com/sipeed/picoclaw.git .
@@ -96,8 +102,6 @@ RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/picolm /entrypoint.sh \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher \
     && ln -sf /app/picolm /usr/local/bin/picolm
 
-# Render supplies PORT at runtime. The launcher is the public listener;
-# PicoClaw gateway and PicoLM adapter remain internal to the container.
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
