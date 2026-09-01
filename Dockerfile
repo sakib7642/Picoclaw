@@ -15,6 +15,8 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web
+# Fix pnpm lockfile issue
+RUN sed -i 's/pnpm install --frozen-lockfile/pnpm install/g' Makefile
 RUN make build
 
 # Copy launcher
