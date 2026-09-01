@@ -1,7 +1,7 @@
 # ============================================================
 # Stage 1: Build the official PicoClaw binary + WebUI launcher
 # ============================================================
-FROM golang:1.25-bookworm AS picoclaw-builder
+FROM golang:1.25.11-bookworm AS picoclaw-builder
 
 ARG PICOCLAW_VERSION=v0.3.1
 ARG NODE_VERSION=22.20.0
