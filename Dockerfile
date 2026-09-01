@@ -1,9 +1,9 @@
 # ============================================================
-# Stage 1: Build PicoClaw Go binary
+# Stage 1: Build PicoClaw Go binary and WebUI
 # ============================================================
-FROM golang:alpine AS picoclaw-builder
+FROM node:22-alpine AS picoclaw-builder
 
-RUN apk add --no-cache git make gcc musl-dev nodejs npm
+RUN apk add --no-cache git make gcc musl-dev go
 RUN npm install -g pnpm
 
 WORKDIR /src
@@ -15,8 +15,8 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web
-# Fix pnpm lockfile issue
-RUN sed -i 's/pnpm install --frozen-lockfile/pnpm install/g' Makefile
+# Skip lockfile strictly
+RUN pnpm config set auto-install-peers true
 RUN make build
 
 # Copy launcher
