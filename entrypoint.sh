@@ -25,13 +25,12 @@ fi
 # The launcher needs to know exactly which gateway binary it should spawn.
 export PICOCLAW_BINARY="/app/picoclaw"
 
-# Useful diagnostics without exposing secrets.
 printf '%s\n' '--- binaries ---'
 ls -lh /app/picoclaw /app/picoclaw-launcher /app/picolm
 printf '%s\n' '--- model ---'
 ls -lh /app/models/tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf
 printf '%s\n' '--- PicoClaw version ---'
-/app/picoclaw --version || true
+/app/picoclaw version || true
 
 # Start the local OpenAI-compatible adapter. It is bound to loopback only.
 python3 /app/scripts/picolm_server.py &
