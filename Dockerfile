@@ -15,8 +15,8 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web
-RUN pnpm config set auto-install-peers true && \
-    pnpm install --no-frozen-lockfile && \
+# Run install manually first to bypass lockfile issues
+RUN pnpm install --no-frozen-lockfile && \
     make build
 
 # Copy launcher
