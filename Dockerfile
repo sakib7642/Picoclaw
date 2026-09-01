@@ -15,7 +15,7 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web/frontend
-RUN pnpm install && pnpm run build:backend
+RUN pnpm install --frozen-lockfile && pnpm run build:backend
 WORKDIR /src/web
 # Skip pnpm install in make by already having built in backend/dist
 RUN make build
