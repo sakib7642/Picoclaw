@@ -4,10 +4,10 @@
 FROM node:22-alpine AS picoclaw-builder
 
 RUN apk add --no-cache git make gcc musl-dev go
+RUN npm install -g pnpm
 
 WORKDIR /src
 RUN git clone --depth 1 --branch v0.3.1 https://github.com/sipeed/picoclaw.git .
-RUN ls -R /src
 
 # Build main binary
 RUN mkdir -p /app && \
@@ -15,8 +15,7 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web/frontend
-# Use npm instead of pnpm to avoid binary hash issues
-RUN npm install && npm run build:backend
+RUN pnpm install && pnpm run build:backend
 WORKDIR /src/web
 # Skip pnpm install in make by already having built in backend/dist
 RUN make build
