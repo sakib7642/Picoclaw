@@ -7,7 +7,7 @@ RUN apk add --no-cache git make gcc musl-dev go
 RUN npm install -g pnpm
 
 WORKDIR /src
-RUN git clone --depth 1 --branch v0.3.1 https://github.com/sipeed/picoclaw.git .
+RUN git clone --depth 1 https://github.com/sipeed/picoclaw.git .
 
 # Build main binary
 RUN mkdir -p /app && \
