@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-PicoLM OpenAI-compatible HTTP API Adapter
-Exposes an OpenAI-compatible REST API (/v1/models, /v1/chat/completions, /v1/completions)
-wrapping the local PicoLM C inference engine and TinyLlama GGUF model.
+PicoLM OpenAI-compatible HTTP API Adapter.
+
+The adapter intentionally stays private on loopback and exposes the minimum
+OpenAI-compatible surface PicoClaw needs: models, chat completions, and text
+completions. PicoLM itself remains the local inference engine.
 """
 
 import json
@@ -11,15 +13,13 @@ import subprocess
 import sys
 import time
 import uuid
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import List, Dict, Any, Optional
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Dict, List
 
-# Configuration
 HOST = os.environ.get("PICOLM_SERVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PICOLM_SERVER_PORT", "8000"))
 DEFAULT_MODEL_NAME = "tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf"
 
-# Locate PicoLM binary
 PICOLM_CANDIDATES = [
     os.environ.get("PICOLM_BIN_PATH", ""),
     "/app/picolm",
@@ -29,20 +29,23 @@ PICOLM_CANDIDATES = [
 ]
 PICOLM_BIN = next((p for p in PICOLM_CANDIDATES if p and os.path.exists(p)), "picolm")
 
-# Locate GGUF Model
 MODEL_CANDIDATES = [
     os.environ.get("PICOLM_MODEL_PATH", ""),
     "/app/models/tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf",
     "/app/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
     "./models/tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf",
 ]
-MODEL_PATH = next((p for p in MODEL_CANDIDATES if p and os.path.exists(p)), "/app/models/tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf")
+MODEL_PATH = next(
+    (p for p in MODEL_CANDIDATES if p and os.path.exists(p)),
+    "/app/models/tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf",
+)
 
 THREADS = int(os.environ.get("PICOLM_THREADS", "2"))
+DEFAULT_TOP_K = int(os.environ.get("PICOLM_TOP_K", "40"))
 
 
 def format_chat_prompt(messages: List[Dict[str, Any]]) -> str:
-    """Format messages into TinyLlama Chat template."""
+    """Format OpenAI chat messages into the TinyLlama chat template."""
     prompt = ""
     for msg in messages:
         role = msg.get("role", "user")
@@ -51,7 +54,7 @@ def format_chat_prompt(messages: List[Dict[str, Any]]) -> str:
             parts = []
             for item in content:
                 if isinstance(item, dict) and "text" in item:
-                    parts.append(item["text"])
+                    parts.append(str(item["text"]))
                 elif isinstance(item, str):
                     parts.append(item)
             content = " ".join(parts)
@@ -64,83 +67,108 @@ def format_chat_prompt(messages: List[Dict[str, Any]]) -> str:
             prompt += f"<|user|>\n{content}</s>\n"
         elif role == "assistant":
             prompt += f"<|assistant|>\n{content}</s>\n"
-    prompt += "<|assistant|>\n"
-    return prompt
+        elif role == "tool":
+            prompt += f"<|user|>\nTool result: {content}</s>\n"
+    return prompt + "<|assistant|>\n"
 
 
-def run_picolm(prompt: str, max_tokens: int = 256, temperature: float = 0.7, top_p: float = 0.9) -> str:
-    """Invoke PicoLM binary and capture stdout output."""
+def run_picolm(
+    prompt: str,
+    max_tokens: int = 256,
+    temperature: float = 0.7,
+    top_k: int = DEFAULT_TOP_K,
+) -> str:
+    """Invoke PicoLM and return generated text."""
     cmd = [
         PICOLM_BIN,
         MODEL_PATH,
-        "-p", prompt,
-        "-n", str(max_tokens),
-        "-t", str(temperature),
-        "-k", str(top_p),
-        "-j", str(THREADS),
+        "-p",
+        prompt,
+        "-n",
+        str(max_tokens),
+        "-t",
+        str(temperature),
+        "-k",
+        str(top_k),
+        "-j",
+        str(THREADS),
     ]
 
-    try:
-        res = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-        )
-        if res.returncode != 0:
-            print(f"[picolm stderr]: {res.stderr}", file=sys.stderr)
-        
-        output = res.stdout.strip()
-        # Clean up stop tokens if any
-        for stop_tag in ["</s>", "<|im_end|>", "<|assistant|>", "<|user|>", "<|system|>"]:
-            if stop_tag in output:
-                output = output.split(stop_tag)[0].strip()
-        return output
-    except Exception as e:
-        print(f"[picolm error]: {e}", file=sys.stderr)
-        return f"Error executing inference: {e}"
+    res = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    if res.returncode != 0:
+        print(f"[picolm stderr]: {res.stderr}", file=sys.stderr)
+        raise RuntimeError(f"PicoLM exited with code {res.returncode}")
+
+    output = res.stdout.strip()
+    for stop_tag in ["</s>", "<|im_end|>", "<|assistant|>", "<|user|>", "<|system|>"]:
+        if stop_tag in output:
+            output = output.split(stop_tag)[0].strip()
+    return output
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Override to keep logs clean
-        sys.stderr.write(f"[PicoLM-Server] {self.address_string()} - {format % args}\n")
+    def log_message(self, fmt, *args):
+        sys.stderr.write(f"[PicoLM-Server] {self.address_string()} - {fmt % args}\n")
+
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS")
 
     def _send_json(self, status_code: int, data: Any):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_head(self, status_code: int):
+        self.send_response(status_code)
+        self.send_header("Content-Length", "0")
+        self._cors()
+        self.end_headers()
+
+    def do_HEAD(self):
+        # Some launchers/proxies probe local providers with HEAD /. Returning
+        # 200 here avoids a false-negative health check.
+        if self.path in ("/", "/health") or self.path.startswith("/v1/models"):
+            self._send_head(200)
+        else:
+            self._send_head(404)
+
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self._cors()
         self.end_headers()
 
     def do_GET(self):
         if self.path in ("/", "/health"):
-            self._send_json(200, {
-                "status": "ok",
-                "service": "picolm-server",
-                "binary": PICOLM_BIN,
-                "model": MODEL_PATH,
-                "model_exists": os.path.exists(MODEL_PATH)
-            })
+            self._send_json(
+                200,
+                {
+                    "status": "ok",
+                    "service": "picolm-server",
+                    "binary": PICOLM_BIN,
+                    "model": MODEL_PATH,
+                    "model_exists": os.path.exists(MODEL_PATH),
+                },
+            )
         elif self.path.startswith("/v1/models"):
+            now = int(time.time())
             models_data = [
-                {"id": DEFAULT_MODEL_NAME, "object": "model", "created": int(time.time()), "owned_by": "picolm"},
-                {"id": "tinyllama", "object": "model", "created": int(time.time()), "owned_by": "picolm"},
-                {"id": "tinyllama-1.1b-chat", "object": "model", "created": int(time.time()), "owned_by": "picolm"}
+                {"id": DEFAULT_MODEL_NAME, "object": "model", "created": now, "owned_by": "picolm"},
+                {"id": "tinyllama", "object": "model", "created": now, "owned_by": "picolm"},
+                {"id": "tinyllama-1.1b-chat", "object": "model", "created": now, "owned_by": "picolm"},
             ]
             self._send_json(200, {"object": "list", "data": models_data})
         else:
@@ -149,11 +177,10 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_len = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_len) if content_len > 0 else b"{}"
-        
         try:
             body = json.loads(post_data.decode("utf-8"))
-        except Exception as e:
-            self._send_json(400, {"error": {"message": f"Malformed JSON: {e}", "type": "invalid_request_error"}})
+        except Exception as exc:
+            self._send_json(400, {"error": {"message": f"Malformed JSON: {exc}", "type": "invalid_request_error"}})
             return
 
         if self.path == "/v1/chat/completions":
@@ -168,117 +195,107 @@ class RequestHandler(BaseHTTPRequestHandler):
         model = body.get("model", DEFAULT_MODEL_NAME)
         max_tokens = int(body.get("max_tokens", 256))
         temperature = float(body.get("temperature", 0.7))
-        top_p = float(body.get("top_p", 0.9))
+        top_k = int(body.get("top_k", DEFAULT_TOP_K))
         stream = bool(body.get("stream", False))
 
         prompt = format_chat_prompt(messages)
         created_time = int(time.time())
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
+        try:
+            output_text = run_picolm(prompt, max_tokens, temperature, top_k)
+        except Exception as exc:
+            self._send_json(502, {"error": {"message": str(exc), "type": "upstream_error"}})
+            return
+
         if stream:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._cors()
             self.end_headers()
 
-            # Execute generation
-            output_text = run_picolm(prompt, max_tokens, temperature, top_p)
-            
             chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
                 "created": created_time,
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": output_text},
-                    "finish_reason": None
-                }]
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": output_text}, "finish_reason": None}],
             }
             self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode("utf-8"))
-            
             end_chunk = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
                 "created": created_time,
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop"
-                }]
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
             self.wfile.write(f"data: {json.dumps(end_chunk)}\n\n".encode("utf-8"))
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
-        else:
-            output_text = run_picolm(prompt, max_tokens, temperature, top_p)
-            prompt_tokens = len(prompt.split())
-            completion_tokens = len(output_text.split())
-            
-            response = {
+            return
+
+        prompt_tokens = len(prompt.split())
+        completion_tokens = len(output_text.split())
+        self._send_json(
+            200,
+            {
                 "id": completion_id,
                 "object": "chat.completion",
                 "created": created_time,
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": output_text
-                    },
-                    "finish_reason": "stop"
-                }],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": output_text}, "finish_reason": "stop"}],
                 "usage": {
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens
-                }
-            }
-            self._send_json(200, response)
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+            },
+        )
 
     def handle_completions(self, body: Dict[str, Any]):
         prompt = body.get("prompt", "")
         if isinstance(prompt, list):
-            prompt = " ".join(prompt)
+            prompt = " ".join(str(item) for item in prompt)
+        prompt = str(prompt)
         model = body.get("model", DEFAULT_MODEL_NAME)
         max_tokens = int(body.get("max_tokens", 256))
         temperature = float(body.get("temperature", 0.7))
-        top_p = float(body.get("top_p", 0.9))
+        top_k = int(body.get("top_k", DEFAULT_TOP_K))
 
-        output_text = run_picolm(prompt, max_tokens, temperature, top_p)
+        try:
+            output_text = run_picolm(prompt, max_tokens, temperature, top_k)
+        except Exception as exc:
+            self._send_json(502, {"error": {"message": str(exc), "type": "upstream_error"}})
+            return
+
         created_time = int(time.time())
         completion_id = f"cmpl-{uuid.uuid4().hex[:12]}"
         prompt_tokens = len(prompt.split())
         completion_tokens = len(output_text.split())
-
-        response = {
-            "id": completion_id,
-            "object": "text_completion",
-            "created": created_time,
-            "model": model,
-            "choices": [{
-                "text": output_text,
-                "index": 0,
-                "logprobs": None,
-                "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens
-            }
-        }
-        self._send_json(200, response)
+        self._send_json(
+            200,
+            {
+                "id": completion_id,
+                "object": "text_completion",
+                "created": created_time,
+                "model": model,
+                "choices": [{"text": output_text, "index": 0, "logprobs": None, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+            },
+        )
 
 
 def main():
     print(f"[PicoLM-Server] Starting OpenAI adapter on {HOST}:{PORT}")
     print(f"[PicoLM-Server] Binary: {PICOLM_BIN}")
     print(f"[PicoLM-Server] Model:  {MODEL_PATH} (exists: {os.path.exists(MODEL_PATH)})")
-    server = HTTPServer((HOST, PORT), RequestHandler)
+    server = ThreadingHTTPServer((HOST, PORT), RequestHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
