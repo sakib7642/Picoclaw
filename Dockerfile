@@ -4,7 +4,7 @@
 FROM golang:1.23-alpine AS picoclaw-builder
 
 RUN apk add --no-cache git make gcc g++ musl-dev nodejs npm python3
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10.33.0
 
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/sipeed/picoclaw.git .
