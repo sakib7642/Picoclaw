@@ -1,9 +1,9 @@
 # ============================================================
 # Stage 1: Build PicoClaw Go binary and WebUI
 # ============================================================
-FROM node:22-alpine AS picoclaw-builder
+FROM golang:1.23-alpine AS picoclaw-builder
 
-RUN apk add --no-cache git make gcc g++ musl-dev go python3
+RUN apk add --no-cache git make gcc g++ musl-dev nodejs npm python3
 RUN npm install -g pnpm
 
 WORKDIR /src
