@@ -15,9 +15,8 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web/frontend
-# Run install manually first
-RUN pnpm install --no-frozen-lockfile
-
+# Delete lockfile, then install
+RUN rm -f pnpm-lock.yaml && pnpm install
 WORKDIR /src/web
 RUN make build
 
