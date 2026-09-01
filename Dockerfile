@@ -15,9 +15,14 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web/frontend
-RUN pnpm install --frozen-lockfile && pnpm run build:backend
+RUN pnpm install --frozen-lockfile
+RUN pnpm run build:backend
 WORKDIR /src/web
-RUN make build && cp build/picoclaw-launcher /app/picoclaw-launcher
+RUN mkdir -p build && \
+    go build -tags "goolm,stdjson" -ldflags "-s -w" -o build/picoclaw-launcher ./backend/
+
+# Copy launcher
+RUN cp build/picoclaw-launcher /app/picoclaw-launcher
 
 # ============================================================
 # Stage 2: Build PicoLM C binary
