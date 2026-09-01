@@ -7,7 +7,8 @@ RUN apk add --no-cache git make gcc musl-dev
 
 WORKDIR /src
 RUN git clone --depth 1 --branch v0.3.1 https://github.com/sipeed/picoclaw.git .
-RUN CGO_ENABLED=0 go build -tags "goolm,stdjson" -ldflags "-s -w" -o /app/picoclaw ./cmd/picoclaw
+RUN mkdir -p /app && \
+    CGO_ENABLED=0 go build -tags "goolm,stdjson" -ldflags "-s -w" -o /app/picoclaw ./cmd/picoclaw
 
 # ============================================================
 # Stage 2: Build PicoLM C binary
@@ -19,7 +20,8 @@ RUN apk add --no-cache git gcc musl-dev make
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/RightNow-AI/picolm.git .
 WORKDIR /src/picolm
-RUN gcc -O2 -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -o /app/picolm \
+RUN mkdir -p /app && \
+    gcc -O2 -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -o /app/picolm \
     picolm.c model.c tensor.c quant.c tokenizer.c sampler.c grammar.c -lm -lpthread
 
 # ============================================================
