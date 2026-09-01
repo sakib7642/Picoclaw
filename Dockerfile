@@ -15,9 +15,9 @@ RUN mkdir -p /app && \
 
 # Build Launcher/WebUI
 WORKDIR /src/web
-# Just run pnpm install without lockfile
-RUN pnpm install --no-frozen-lockfile
-RUN make build
+RUN pnpm config set auto-install-peers true && \
+    pnpm install --no-frozen-lockfile && \
+    make build
 
 # Copy launcher
 RUN cp build/picoclaw-launcher /app/picoclaw-launcher
