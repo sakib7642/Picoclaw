@@ -3,7 +3,7 @@
 # ============================================================
 FROM node:22-alpine AS picoclaw-builder
 
-RUN apk add --no-cache git make gcc musl-dev go
+RUN apk add --no-cache git make gcc g++ musl-dev go python3
 RUN npm install -g pnpm
 
 WORKDIR /src
