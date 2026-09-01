@@ -1,53 +1,79 @@
-﻿# PicoClaw + Local PicoLM Stack
+# PicoClaw + local PicoLM + TinyLlama
 
-An all-in-one, fully offline, self-hosted deployment of [PicoClaw](https://github.com/sipeed/picoclaw) powered by a local [PicoLM](https://github.com/RightNow-AI/picolm) inference engine and the TinyLlama 1.1B Q4_K_M GGUF model running inside a single container on Render.
+All-in-one Docker deployment of the official PicoClaw WebUI/Launcher with a local PicoLM inference adapter and TinyLlama 1.1B Q4_K_M.
 
 ## Architecture
 
-```
+```text
 Internet
    │
-Render
+Render $PORT
    │
-PicoClaw (:8080)
+PicoClaw WebUI / Launcher  (public)
    │
-Local OpenAI Adapter (:8000)
-   │
-PicoLM (C inference engine)
-   │
-TinyLlama 1.1B Q4_K_M GGUF
+   └── PicoClaw Gateway    127.0.0.1:18790
+           │
+           └── OpenAI-compatible PicoLM adapter 127.0.0.1:8000
+                    │
+                    └── /app/picolm + TinyLlama GGUF
 ```
 
-- **PicoClaw**: Lightweight AI agent runtime written in Go (v0.3.1) listening on `0.0.0.0:8080`.
-- **PicoLM Adapter**: Lightweight OpenAI-compatible Python HTTP server running on `127.0.0.1:8000`.
-- **PicoLM**: Ultra-lightweight pure C inference engine executing inference locally.
-- **TinyLlama 1.1B**: Quantized (Q4_K_M) GGUF model bundled directly in `/app/models/`.
+The upstream PicoClaw WebUI is kept intact. The only custom integration is the local OpenAI-compatible endpoint used by the PicoClaw model configuration.
 
-## Repository Structure
+## Important details
 
-```
+- PicoClaw is pinned to **v0.3.1** for a reproducible WebUI build.
+- The v0.3.1 build uses **Go 1.25.11+**, Node.js 22+, and pnpm 10.33.0+.
+- The public listener is the **WebUI launcher**, not the PicoClaw gateway. This avoids the previous `404 page not found` result from exposing the gateway root.
+- The gateway stays internal on `127.0.0.1:18790`.
+- The local PicoLM adapter stays internal on `127.0.0.1:8000`.
+- Telegram is intentionally not configured in the repository. It can be added later from the WebUI, so no Telegram token is required for this deployment.
+- Render supplies the public `PORT`; the entrypoint passes it to the launcher.
+
+## Repository structure
+
+```text
 .
-├── Dockerfile              # Multi-stage Docker build
-├── entrypoint.sh           # Container init, health checks & supervisor
+├── Dockerfile
+├── entrypoint.sh
 ├── config/
-│   └── config.json         # PicoClaw configuration (local OpenAI provider)
+│   └── config.json
 ├── scripts/
-│   └── picolm_server.py    # OpenAI-compatible /v1 adapter for PicoLM
+│   └── picolm_server.py
 ├── .dockerignore
 └── README.md
 ```
 
-## Deployment on Render
+## Local model
 
-1. Connect the GitHub repository `sakib7642/Picoclaw` to Render.
-2. Create a new **Web Service** with:
-   - **Runtime**: Docker
-   - **Region**: Singapore (or Oregon)
-   - **Plan**: Free (or Starter)
-3. PicoClaw binds to `0.0.0.0:8080` (or the dynamic `$PORT` provided by Render).
-4. Access the service at your Render URL (e.g., `https://<service-name>.onrender.com`).
+The image bundles:
 
-## Verification & Health Endpoints
+```text
+tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf
+```
 
-- **PicoClaw Health Check**: `GET /health` (Port `8080`)
-- **Internal Adapter Health**: `GET /health` or `GET /v1/models` (Port `8000`)
+The model is downloaded during the Docker build and served through the local adapter at:
+
+```text
+http://127.0.0.1:8000/v1
+```
+
+PicoClaw uses its normal `model_list` / OpenAI-compatible provider configuration, so the WebUI can continue to manage the normal PicoClaw configuration surface.
+
+## Render deployment
+
+Create a **Web Service** from this repository using the **Docker** runtime and the repository's root `Dockerfile`.
+
+The container starts the local adapter first and then launches the official PicoClaw WebUI. The launcher starts/manages the gateway using `/root/.picoclaw/config.json`.
+
+For a fresh container, the initial configuration is copied from `config/config.json`; after startup, the WebUI is the intended configuration interface.
+
+## Verification
+
+From inside the container the expected services are:
+
+- WebUI: `0.0.0.0:$PORT`
+- Gateway: `127.0.0.1:18790`
+- PicoLM adapter: `127.0.0.1:8000`
+
+The Docker health check probes the WebUI root path. Render should therefore detect the public WebUI listener rather than the internal gateway.
