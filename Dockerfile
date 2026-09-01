@@ -104,7 +104,9 @@ RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/picolm /entrypoint.sh \
 
 EXPOSE 8080
 
+# Dockerfile HEALTHCHECK uses CMD (not CMD-SHELL). The shell command lets
+# the Render-provided PORT be expanded at runtime.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
-    CMD-SHELL curl -fsS "http://127.0.0.1:${PORT:-8080}/" >/dev/null || exit 1
+    CMD /bin/sh -c 'curl -fsS "http://127.0.0.1:${PORT:-8080}/" >/dev/null || exit 1'
 
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
