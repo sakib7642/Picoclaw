@@ -17,11 +17,7 @@ RUN mkdir -p /app && \
 WORKDIR /src/web/frontend
 RUN pnpm install --frozen-lockfile && pnpm run build:backend
 WORKDIR /src/web
-# Skip pnpm install in make by already having built in backend/dist
-RUN make build
-
-# Copy launcher
-RUN cp build/picoclaw-launcher /app/picoclaw-launcher
+RUN make build && cp build/picoclaw-launcher /app/picoclaw-launcher
 
 # ============================================================
 # Stage 2: Build PicoLM C binary
