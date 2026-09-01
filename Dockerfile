@@ -9,17 +9,17 @@ RUN npm install -g pnpm
 WORKDIR /src
 RUN git clone --depth 1 --branch v0.3.1 https://github.com/sipeed/picoclaw.git .
 
-# Debug
-RUN ls -R /src/web
-
 # Build main binary
 RUN mkdir -p /app && \
     CGO_ENABLED=0 go build -tags "goolm,stdjson" -ldflags "-s -w" -o /app/picoclaw ./cmd/picoclaw
 
 # Build Launcher/WebUI
+WORKDIR /src/web/frontend
+# Run install manually first
+RUN pnpm install --no-frozen-lockfile
+
 WORKDIR /src/web
-RUN pnpm install --no-frozen-lockfile && \
-    make build
+RUN make build
 
 # Copy launcher
 RUN cp build/picoclaw-launcher /app/picoclaw-launcher
