@@ -12,7 +12,7 @@ export LD_LIBRARY_PATH="/opt/llama:${LD_LIBRARY_PATH:-}"
 while :; do
     echo "[Qwen-Supervisor] starting llama.cpp on ${MODEL_HOST}:${MODEL_PORT}"
 
-    /app/llama-server \
+    if /app/llama-server \
         --model "${MODEL_PATH}" \
         --alias "qwen3.5-0.8b" \
         --host "${MODEL_HOST}" \
@@ -29,9 +29,12 @@ while :; do
         --top-k 20 \
         --top-p 0.9 \
         --min-p 0.05 \
-        --repeat-penalty 1.1
+        --repeat-penalty 1.1; then
+        status=0
+    else
+        status=$?
+    fi
 
-    status=$?
     echo "[Qwen-Supervisor] llama.cpp exited with code ${status}; restarting in 2s" >&2
     sleep 2
 done
