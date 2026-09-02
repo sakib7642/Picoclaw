@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 HOST = os.getenv('ROUTER_HOST', '127.0.0.1')
 PORT = int(os.getenv('ROUTER_PORT', '8100'))
 LOCAL_BASE = os.getenv('LOCAL_MODEL_BASE', 'http://127.0.0.1:8000/v1').rstrip('/')
-LOCAL_MODEL_ID = 'mobilellm-376m'
+LOCAL_MODEL_ID = os.getenv('LOCAL_MODEL_ID', 'mobilellm-376m')
 REFRESH = int(os.getenv('ROUTER_REFRESH_SECONDS', '300'))
 PROBE_EVERY = int(os.getenv('ROUTER_PROBE_SECONDS', '900'))
 TIMEOUT = int(os.getenv('ROUTER_TIMEOUT_SECONDS', '120'))
@@ -19,10 +19,8 @@ QUOTA_COOLDOWN = int(os.getenv('ROUTER_QUOTA_COOLDOWN_SECONDS', '86400'))
 STATE_FILE = os.getenv('ROUTER_STATE_FILE', '/root/.picoclaw/router-state.json')
 ADMIN_PASSWORD = os.getenv('ROUTER_ADMIN_PASSWORD', os.getenv('PICOCLAW_WEBUI_PASSWORD', '')).strip()
 
-# These are OpenAI-compatible providers. A provider is active only when its
-# API-key environment variable exists and is non-empty. This keeps the image
-# usable without leaking or inventing API keys. New providers can also be
-# added through ROUTER_EXTRA_PROVIDERS_JSON or the local admin API.
+# Provider adapters are enabled only when their API-key environment variable
+# is present. Additional OpenAI-compatible providers can be added at runtime.
 BUILTIN_PROVIDERS = [
     ('openrouter', 'OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1', 100),
     ('groq', 'GROQ_API_KEY', 'https://api.groq.com/openai/v1', 98),
@@ -37,33 +35,22 @@ BUILTIN_PROVIDERS = [
     ('cohere', 'COHERE_API_KEY', 'https://api.cohere.ai/compatibility/v1', 82),
     ('openai', 'OPENAI_API_KEY', 'https://api.openai.com/v1', 80),
 ]
-
-BAD_MODEL_WORDS = (
-    'embedding', 'embed', 'moderation', 'rerank', 'tts', 'speech', 'whisper',
-    'image', 'vision-embedding', 'audio'
-)
-
-TOP_PATTERNS = [
+BAD = ('embedding', 'embed', 'moderation', 'rerank', 'tts', 'speech', 'whisper', 'audio')
+PATTERNS = [
     (150, r'gpt-oss-120b|gpt-5|gpt-4\.1'),
     (149, r'claude.*sonnet|claude.*opus'),
-    (148, r'gemini-3\.7-flash|gemini-3\.6-flash|gemini-3\.5-flash'),
-    (147, r'kimi.*k2\.5|kimi.*k2'),
+    (148, r'gemini-3.*flash'),
+    (147, r'kimi.*k2'),
     (146, r'glm-5|glm-4\.7'),
-    (145, r'qwen3\.6.*27b|qwen3\.5.*9b|qwen3.*235b|qwen.*72b'),
+    (145, r'qwen3.*(235b|72b|32b|30b|27b)|qwen3\.5.*9b'),
     (144, r'deepseek-v4|deepseek-r1|deepseek-chat'),
     (143, r'gemma-4.*27b|gemma-3.*27b'),
     (142, r'llama-4|llama-3\.3-70b'),
-    (140, r'gpt-oss-20b|qwen3.*32b|qwen3.*30b'),
     (135, r'llama.*8b|qwen.*14b|qwen.*7b|command-a'),
 ]
 
-state_lock = threading.RLock()
-state = {
-    'disabled_providers': [],
-    'disabled_models': [],
-    'custom_providers': [],
-    'providers': {},
-}
+lock = threading.RLock()
+state = {'disabled_providers': [], 'disabled_models': [], 'custom_providers': [], 'providers': {}}
 last_refresh = 0.0
 last_probe = 0.0
 
@@ -72,9 +59,9 @@ def load_state():
     global state
     try:
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
-            loaded = json.load(f)
-        if isinstance(loaded, dict):
-            state.update(loaded)
+            value = json.load(f)
+        if isinstance(value, dict):
+            state.update(value)
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -86,19 +73,15 @@ def save_state():
     if directory:
         os.makedirs(directory, exist_ok=True)
     tmp = STATE_FILE + '.tmp'
-    with state_lock:
-        data = {
-            'disabled_providers': list(state.get('disabled_providers', [])),
-            'disabled_models': list(state.get('disabled_models', [])),
-            'custom_providers': list(state.get('custom_providers', [])),
-            'providers': state.get('providers', {}),
-        }
+    with lock:
+        value = {k: state.get(k, []) for k in ('disabled_providers', 'disabled_models', 'custom_providers')}
+        value['providers'] = state.get('providers', {})
     with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(value, f, ensure_ascii=False, indent=2)
     os.replace(tmp, STATE_FILE)
 
 
-def all_provider_defs():
+def provider_defs():
     defs = list(BUILTIN_PROVIDERS)
     extra = os.getenv('ROUTER_EXTRA_PROVIDERS_JSON', '').strip()
     if extra:
@@ -107,377 +90,247 @@ def all_provider_defs():
                 if p.get('id') and p.get('api_key_env') and p.get('base_url'):
                     defs.append((p['id'], p['api_key_env'], p['base_url'].rstrip('/'), int(p.get('priority', 70))))
         except Exception as e:
-            print('[Router] invalid ROUTER_EXTRA_PROVIDERS_JSON:', e, flush=True)
+            print('[Router] invalid extra providers:', e, flush=True)
     for p in state.get('custom_providers', []):
         if p.get('id') and p.get('api_key_env') and p.get('base_url'):
             defs.append((p['id'], p['api_key_env'], p['base_url'].rstrip('/'), int(p.get('priority', 70))))
     merged = {}
-    for item in defs:
-        merged[item[0]] = item
-    return list(merged.values())
-
-
-def provider_defs():
+    for pid, env, base, pri in defs:
+        merged[pid] = (pid, env, base, pri)
     disabled = set(state.get('disabled_providers', []))
-    out = []
-    for pid, env, base, pri in all_provider_defs():
-        key = os.getenv(env, '').strip()
-        if key and pid not in disabled:
-            out.append({'id': pid, 'env': env, 'base': base, 'priority': pri, 'key': key})
-    return out
+    return [
+        {'id': pid, 'env': env, 'base': base, 'priority': pri, 'key': os.getenv(env, '').strip()}
+        for pid, env, base, pri in merged.values()
+        if pid not in disabled and os.getenv(env, '').strip()
+    ]
 
 
-def score_model(mid, provider_priority):
+def pstate(pid):
+    return state.setdefault('providers', {}).setdefault(pid, {'cooldown': 0, 'models': {}, 'ok': False, 'last_error': ''})
+
+
+def score(mid, pri):
     low = mid.lower()
-    if any(w in low for w in BAD_MODEL_WORDS):
+    if any(x in low for x in BAD):
         return -100000
-    score = provider_priority
-    for points, pattern in TOP_PATTERNS:
+    value = pri
+    for points, pattern in PATTERNS:
         if re.search(pattern, low):
-            score += points
+            value += points
             break
-    if ':free' in low or low.endswith('-free') or ' free ' in low:
-        score += 5
+    if ':free' in low or low.endswith('-free'):
+        value += 5
     if 'preview' in low or 'experimental' in low:
-        score -= 2
+        value -= 2
     if 'instruct' in low or 'chat' in low:
-        score += 3
-    if 'base' in low and 'chat' not in low:
-        score -= 8
-    return score
-
-
-def provider_state(pid):
-    return state.setdefault('providers', {}).setdefault(pid, {
-        'cooldown': 0.0,
-        'models': {},
-        'ok': False,
-        'last_error': '',
-        'last_refresh': 0.0,
-    })
+        value += 3
+    return value
 
 
 def discover(p):
-    ps = provider_state(p['id'])
+    ps = pstate(p['id'])
     try:
-        req = Request(
-            p['base'] + '/models',
-            headers={
-                'Authorization': 'Bearer ' + p['key'],
-                'User-Agent': 'PicoClaw-OmniRouter/2.1',
-                'Accept': 'application/json',
-            },
-        )
+        req = Request(p['base'] + '/models', headers={'Authorization': 'Bearer ' + p['key'], 'Accept': 'application/json', 'User-Agent': 'PicoClaw-OmniRouter/2.2'})
         with urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode('utf-8', 'replace'))
         ids = [str(x['id']) for x in data.get('data', []) if isinstance(x, dict) and x.get('id')]
-        now = time.time()
-        with state_lock:
-            old = ps.get('models', {})
-            ps['models'] = {
-                mid: old.get(mid, {
-                    'cooldown': 0.0,
-                    'last_ok': 0.0,
-                    'last_probe': 0.0,
-                    'failures': 0,
-                    'score': score_model(mid, p['priority']),
-                }) for mid in ids
-            }
-            for mid, ms in ps['models'].items():
-                ms['score'] = score_model(mid, p['priority'])
-            ps['ok'] = True
-            ps['last_error'] = ''
-            ps['last_refresh'] = now
-        return ids
+        old = ps.get('models', {})
+        ps['models'] = {mid: old.get(mid, {'cooldown': 0, 'failures': 0, 'last_ok': 0, 'score': score(mid, p['priority'])}) for mid in ids}
+        for mid in ids:
+            ps['models'][mid]['score'] = score(mid, p['priority'])
+        ps['ok'] = True
+        ps['last_error'] = ''
+        ps['last_refresh'] = time.time()
     except HTTPError as e:
-        body = e.read().decode('utf-8', 'replace')[:300]
-        with state_lock:
-            ps['ok'] = False
-            ps['last_error'] = f'HTTP {e.code}: {body}'
-            if e.code in (401, 403, 429):
-                ps['cooldown'] = time.time() + QUOTA_COOLDOWN
-        return []
+        body = e.read().decode('utf-8', 'replace')[:240]
+        ps['ok'] = False
+        ps['last_error'] = f'HTTP {e.code}: {body}'
+        if e.code in (401, 403, 429):
+            ps['cooldown'] = time.time() + QUOTA_COOLDOWN
     except Exception as e:
-        with state_lock:
-            ps['ok'] = False
-            ps['last_error'] = str(e)[:300]
-        return []
+        ps['ok'] = False
+        ps['last_error'] = str(e)[:240]
 
 
 def refresh():
     global last_refresh
-    ps = provider_defs()
-    for p in ps:
+    for p in provider_defs():
         discover(p)
     last_refresh = time.time()
-    active = ', '.join(p['id'] for p in ps) or 'none'
-    print('[Router] registry refreshed; active providers: ' + active, flush=True)
+    print('[Router] active providers: ' + ', '.join(p['id'] for p in provider_defs()) if provider_defs() else '[Router] active providers: none', flush=True)
 
 
 def candidates():
     now = time.time()
-    disabled_models = set(state.get('disabled_models', []))
+    disabled = set(state.get('disabled_models', []))
     out = []
     for p in provider_defs():
-        ps = provider_state(p['id'])
+        ps = pstate(p['id'])
         if ps.get('cooldown', 0) > now:
             continue
-        for mid, ms in dict(ps.get('models', {})).items():
-            key = f'{p["id"]}/{mid}'
-            if key in disabled_models or ms.get('cooldown', 0) > now or ms.get('score', -100000) < 0:
+        for mid, ms in ps.get('models', {}).items():
+            if f'{p["id"]}/{mid}' in disabled or ms.get('cooldown', 0) > now or ms.get('score', -100000) < 0:
                 continue
-            penalty = min(ms.get('failures', 0) * 10, 50)
-            out.append((ms.get('score', score_model(mid, p['priority'])) - penalty, p, mid))
+            out.append((ms.get('score', score(mid, p['priority'])) - min(ms.get('failures', 0) * 10, 50), p, mid))
     out.sort(key=lambda x: x[0], reverse=True)
     return out
 
 
-def mark_failure(p, mid, status, headers, detail=''):
+def fail(p, mid, status, detail=''):
     now = time.time()
-    if status == 429:
-        cooldown = QUOTA_COOLDOWN
-    elif status in (401, 403):
-        cooldown = QUOTA_COOLDOWN
-    elif status in (400, 404, 422):
-        cooldown = 6 * 3600
-    elif status >= 500:
-        cooldown = 120
-    else:
-        cooldown = 300
-    with state_lock:
-        ps = provider_state(p['id'])
-        ms = ps['models'].setdefault(mid, {
-            'cooldown': 0.0, 'last_ok': 0.0, 'last_probe': 0.0,
-            'failures': 0, 'score': score_model(mid, p['priority']),
-        })
-        ms['failures'] = ms.get('failures', 0) + 1
-        ms['cooldown'] = now + cooldown
-        ps['last_error'] = f'HTTP {status}; cooldown={cooldown}s {detail}'.strip()
-        if status in (401, 403, 429):
-            ps['cooldown'] = max(ps.get('cooldown', 0), now + cooldown)
+    cooldown = QUOTA_COOLDOWN if status in (401, 403, 429) else 6 * 3600 if status in (400, 404, 422) else 120 if status >= 500 else 300
+    ps = pstate(p['id'])
+    ms = ps['models'].setdefault(mid, {'cooldown': 0, 'failures': 0, 'last_ok': 0, 'score': score(mid, p['priority'])})
+    ms['failures'] = ms.get('failures', 0) + 1
+    ms['cooldown'] = now + cooldown
+    ps['last_error'] = f'HTTP {status}: {detail}'[:300]
+    if status in (401, 403, 429):
+        ps['cooldown'] = now + cooldown
     save_state()
 
 
-def mark_success(p, mid):
-    with state_lock:
-        ps = provider_state(p['id'])
-        ms = ps['models'].setdefault(mid, {})
-        ms['last_ok'] = time.time()
-        ms['failures'] = max(0, ms.get('failures', 0) - 1)
-        ms['cooldown'] = 0.0
-        ps['cooldown'] = 0.0
-        ps['ok'] = True
-        ps['last_error'] = ''
+def success(p, mid):
+    ps = pstate(p['id'])
+    ms = ps['models'].setdefault(mid, {})
+    ms['last_ok'] = time.time()
+    ms['failures'] = max(0, ms.get('failures', 0) - 1)
+    ms['cooldown'] = 0
+    ps['cooldown'] = 0
+    ps['ok'] = True
+    ps['last_error'] = ''
     save_state()
 
 
-def upstream(p, mid, payload):
+def post_chat(base, key, model, payload):
     body = dict(payload)
-    body['model'] = mid
+    body['model'] = model
     raw = json.dumps(body, ensure_ascii=False).encode('utf-8')
-    req = Request(
-        p['base'] + '/chat/completions',
-        data=raw,
-        headers={
-            'Authorization': 'Bearer ' + p['key'],
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream, application/json',
-            'User-Agent': 'PicoClaw-OmniRouter/2.1',
-        },
-        method='POST',
-    )
+    req = Request(base + '/chat/completions', data=raw, method='POST', headers={
+        'Authorization': 'Bearer ' + key,
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream, application/json',
+        'User-Agent': 'PicoClaw-OmniRouter/2.2',
+    })
     return urlopen(req, timeout=TIMEOUT)
 
 
-def local_upstream(payload):
-    body = dict(payload)
-    body['model'] = LOCAL_MODEL_ID
-    raw = json.dumps(body, ensure_ascii=False).encode('utf-8')
-    req = Request(
-        LOCAL_BASE + '/chat/completions',
-        data=raw,
-        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer local'},
-        method='POST',
-    )
-    return urlopen(req, timeout=TIMEOUT)
-
-
-def do_request(payload):
+def route(payload):
     global last_refresh
     if time.time() - last_refresh > REFRESH:
         refresh()
     errors = []
     for _, p, mid in candidates():
         try:
-            r = upstream(p, mid, payload)
-            return r, p['id'], mid, errors
+            return post_chat(p['base'], p['key'], mid, payload), p['id'], mid
         except HTTPError as e:
-            detail = e.read().decode('utf-8', 'replace')[:200]
-            mark_failure(p, mid, e.code, e.headers, detail)
+            detail = e.read().decode('utf-8', 'replace')[:180]
+            fail(p, mid, e.code, detail)
             errors.append(f'{p["id"]}/{mid}: HTTP {e.code}')
         except (URLError, TimeoutError, OSError) as e:
-            mark_failure(p, mid, 503, {}, str(e)[:120])
-            errors.append(f'{p["id"]}/{mid}: {type(e).__name__}')
+            fail(p, mid, 503, str(e)[:100])
+            errors.append(f'{p["id"]}/{mid}: network')
         except Exception as e:
-            mark_failure(p, mid, 503, {}, str(e)[:120])
-            errors.append(f'{p["id"]/{mid}: {type(e).__name__}')
+            fail(p, mid, 503, str(e)[:100])
+            errors.append(f'{p["id"]}/{mid}: error')
     try:
-        return local_upstream(payload), 'local', LOCAL_MODEL_ID, errors
+        return post_chat(LOCAL_BASE, 'local', LOCAL_MODEL_ID, payload), 'local', LOCAL_MODEL_ID
     except Exception as e:
-        errors.append('local/' + LOCAL_MODEL_ID + ': ' + type(e).__name__)
-    raise RuntimeError('No working model route: ' + '; '.join(errors[-10:]))
+        errors.append('local/' + LOCAL_MODEL_ID + ': ' + str(e)[:100])
+    raise RuntimeError('No working route: ' + '; '.join(errors[-10:]))
 
 
-def auth_ok(handler):
-    if not ADMIN_PASSWORD:
-        return False
-    value = handler.headers.get('Authorization', '')
-    return value == 'Bearer ' + ADMIN_PASSWORD
+def admin_ok(handler):
+    return bool(ADMIN_PASSWORD) and handler.headers.get('Authorization', '') == 'Bearer ' + ADMIN_PASSWORD
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'PicoClaw-OmniRouter/2.1'
+    server_version = 'PicoClaw-OmniRouter/2.2'
 
     def log_message(self, fmt, *args):
         print('[Router] ' + fmt % args, flush=True)
 
-    def _json(self, code, obj, extra_headers=None):
+    def send_json(self, code, obj):
         raw = json.dumps(obj, ensure_ascii=False).encode('utf-8')
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(raw)))
-        if extra_headers:
-            for k, v in extra_headers.items():
-                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(raw)
 
-    def _body(self):
+    def body(self):
         n = int(self.headers.get('Content-Length', '0'))
         return json.loads(self.rfile.read(n).decode('utf-8'))
 
     def do_GET(self):
         if self.path == '/health':
-            cs = candidates()
-            self._json(200, {
-                'status': 'ok',
-                'hosted_candidates': len(cs),
-                'local_fallback': LOCAL_MODEL_ID,
-                'last_refresh': last_refresh,
-                'quota_cooldown_seconds': QUOTA_COOLDOWN,
-            })
+            self.send_json(200, {'status': 'ok', 'hosted_candidates': len(candidates()), 'local_fallback': LOCAL_MODEL_ID})
             return
-
         if self.path.startswith('/v1/models'):
             if time.time() - last_refresh > REFRESH:
                 refresh()
             data = [{'id': 'omniroute', 'object': 'model', 'owned_by': 'picoclaw-router'}]
-            for _, p, mid in candidates():
-                data.append({'id': f'{p["id"]}/{mid}', 'object': 'model', 'owned_by': p['id']})
-            data.append({'id': LOCAL_MODEL_ID, 'object': 'model', 'owned_by': 'facebook-mobilellm'})
-            self._json(200, {'object': 'list', 'data': data})
+            data += [{'id': f'{p["id"]}/{mid}', 'object': 'model', 'owned_by': p['id']} for _, p, mid in candidates()]
+            data.append({'id': LOCAL_MODEL_ID, 'object': 'model', 'owned_by': 'mobilellm'})
+            self.send_json(200, {'object': 'list', 'data': data})
             return
-
         if self.path == '/admin/status':
-            if not auth_ok(self):
-                self._json(401, {'error': 'unauthorized'})
+            if not admin_ok(self):
+                self.send_json(401, {'error': 'unauthorized'})
                 return
-            with state_lock:
+            with lock:
                 snapshot = json.loads(json.dumps(state))
-            self._json(200, {
-                'active_providers': [p['id'] for p in provider_defs()],
-                'candidates': [
-                    {'provider': p['id'], 'model': mid, 'score': score}
-                    for score, p, mid in candidates()[:100]
-                ],
-                'state': snapshot,
-            })
+            self.send_json(200, {'active_providers': [p['id'] for p in provider_defs()], 'candidates': [{'provider': p['id'], 'model': mid, 'score': s} for s, p, mid in candidates()[:100]], 'state': snapshot})
             return
-
-        self._json(404, {'error': 'not_found'})
+        self.send_json(404, {'error': 'not_found'})
 
     def do_POST(self):
-        if self.path not in ('/v1/chat/completions', '/chat/completions') and not self.path.startswith('/admin/'):
-            self._json(404, {'error': 'not_found'})
-            return
-
         if self.path.startswith('/admin/'):
-            if not auth_ok(self):
-                self._json(401, {'error': 'unauthorized'})
+            if not admin_ok(self):
+                self.send_json(401, {'error': 'unauthorized'})
                 return
             try:
-                body = self._body()
+                b = self.body()
                 if self.path == '/admin/refresh':
-                    refresh()
-                    self._json(200, {'ok': True})
-                    return
-
+                    refresh(); self.send_json(200, {'ok': True}); return
                 if self.path == '/admin/provider':
-                    action = body.get('action')
-                    pid = str(body.get('id', '')).strip()
-                    if not pid:
-                        raise ValueError('provider id is required')
+                    action, pid = b.get('action'), str(b.get('id', '')).strip()
+                    if not pid: raise ValueError('provider id is required')
                     disabled = set(state.get('disabled_providers', []))
-                    if action == 'disable':
-                        disabled.add(pid)
-                    elif action == 'enable':
-                        disabled.discard(pid)
+                    if action == 'disable': disabled.add(pid)
+                    elif action == 'enable': disabled.discard(pid)
                     elif action == 'add':
-                        env = str(body.get('api_key_env', '')).strip()
-                        base = str(body.get('base_url', '')).strip().rstrip('/')
-                        if not env or not base:
-                            raise ValueError('api_key_env and base_url are required')
-                        custom = [x for x in state.get('custom_providers', []) if x.get('id') != pid]
-                        custom.append({'id': pid, 'api_key_env': env, 'base_url': base, 'priority': int(body.get('priority', 70))})
-                        state['custom_providers'] = custom
-                        disabled.discard(pid)
-                    elif action == 'remove':
+                        env, base = str(b.get('api_key_env', '')).strip(), str(b.get('base_url', '')).strip().rstrip('/')
+                        if not env or not base: raise ValueError('api_key_env and base_url are required')
                         state['custom_providers'] = [x for x in state.get('custom_providers', []) if x.get('id') != pid]
-                        disabled.add(pid)
-                    else:
-                        raise ValueError('action must be add/remove/enable/disable')
-                    state['disabled_providers'] = sorted(disabled)
-                    save_state()
-                    refresh()
-                    self._json(200, {'ok': True, 'providers': [p['id'] for p in provider_defs()]})
-                    return
-
-                if self.path == '/admin/model':
-                    action = body.get('action')
-                    provider = str(body.get('provider', '')).strip()
-                    model = str(body.get('model', '')).strip()
-                    key = provider + '/' + model
-                    if not provider or not model:
-                        raise ValueError('provider and model are required')
-                    disabled = set(state.get('disabled_models', []))
-                    if action == 'disable':
-                        disabled.add(key)
-                    elif action == 'enable':
-                        disabled.discard(key)
+                        state['custom_providers'].append({'id': pid, 'api_key_env': env, 'base_url': base, 'priority': int(b.get('priority', 70))})
+                        disabled.discard(pid)
                     elif action == 'remove':
-                        disabled.add(key)
-                    elif action == 'add':
-                        disabled.discard(key)
-                    else:
-                        raise ValueError('action must be add/remove/enable/disable')
-                    state['disabled_models'] = sorted(disabled)
-                    save_state()
-                    self._json(200, {'ok': True, 'model': key, 'disabled': key in disabled})
-                    return
-
-                self._json(404, {'error': 'unknown_admin_endpoint'})
+                        state['custom_providers'] = [x for x in state.get('custom_providers', []) if x.get('id') != pid]; disabled.add(pid)
+                    else: raise ValueError('action must be add/remove/enable/disable')
+                    state['disabled_providers'] = sorted(disabled); save_state(); refresh()
+                    self.send_json(200, {'ok': True}); return
+                if self.path == '/admin/model':
+                    action, provider, model = b.get('action'), str(b.get('provider', '')).strip(), str(b.get('model', '')).strip()
+                    if not provider or not model: raise ValueError('provider and model are required')
+                    key, disabled = provider + '/' + model, set(state.get('disabled_models', []))
+                    if action in ('disable', 'remove'): disabled.add(key)
+                    elif action in ('enable', 'add'): disabled.discard(key)
+                    else: raise ValueError('action must be add/remove/enable/disable')
+                    state['disabled_models'] = sorted(disabled); save_state(); self.send_json(200, {'ok': True, 'disabled': key in disabled}); return
+                self.send_json(404, {'error': 'unknown_admin_endpoint'})
             except Exception as e:
-                self._json(400, {'error': str(e)})
+                self.send_json(400, {'error': str(e)})
             return
 
+        if self.path not in ('/v1/chat/completions', '/chat/completions'):
+            self.send_json(404, {'error': 'not_found'}); return
         try:
-            payload = self._body()
+            payload = self.body()
             payload.pop('router_debug', None)
-            r, pid, mid, _ = do_request(payload)
+            r, pid, mid = route(payload)
             if pid != 'local':
-                p = next((p for p in provider_defs() if p['id'] == pid), None)
-                if p:
-                    mark_success(p, mid)
+                p = next((x for x in provider_defs() if x['id'] == pid), None)
+                if p: success(p, mid)
             self.send_response(r.status)
             for k, v in r.headers.items():
                 if k.lower() in ('content-length', 'transfer-encoding', 'connection', 'server', 'date'):
@@ -487,55 +340,38 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             while True:
                 chunk = r.read(8192)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
+                if not chunk: break
+                self.wfile.write(chunk); self.wfile.flush()
             r.close()
-            print(f'[Router] routed -> {pid}/{mid}', flush=True)
+            print('[Router] routed -> ' + pid + '/' + mid, flush=True)
         except Exception as e:
-            self._json(503, {'error': {'message': str(e), 'type': 'router_unavailable'}})
+            self.send_json(503, {'error': {'message': str(e), 'type': 'router_unavailable'}})
 
 
-def probe_best_models():
+def probe():
     for p in provider_defs():
-        ps = provider_state(p['id'])
-        if ps.get('cooldown', 0) > time.time():
+        if pstate(p['id']).get('cooldown', 0) > time.time():
             continue
-        available = [x for x in candidates() if x[1]['id'] == p['id']]
-        if not available:
-            continue
-        _, _, mid = available[0]
+        cs = [x for x in candidates() if x[1]['id'] == p['id']]
+        if not cs: continue
+        _, _, mid = cs[0]
         try:
-            rr = upstream(p, mid, {
-                'model': mid,
-                'messages': [{'role': 'user', 'content': 'Reply with exactly OK'}],
-                'max_tokens': 1,
-                'temperature': 0,
-                'stream': False,
-            })
-            rr.read(4096)
-            rr.close()
-            mark_success(p, mid)
-            print(f'[Router] probe OK -> {p["id"]}/{mid}', flush=True)
+            r = post_chat(p['base'], p['key'], mid, {'messages': [{'role': 'user', 'content': 'OK'}], 'max_tokens': 1, 'temperature': 0, 'stream': False})
+            r.read(2048); r.close(); success(p, mid)
+            print('[Router] probe OK -> ' + p['id'] + '/' + mid, flush=True)
         except HTTPError as e:
-            detail = e.read().decode('utf-8', 'replace')[:160]
-            mark_failure(p, mid, e.code, e.headers, detail)
-            print(f'[Router] probe failed -> {p["id"]}/{mid}: HTTP {e.code}', flush=True)
+            fail(p, mid, e.code, e.read().decode('utf-8', 'replace')[:120])
         except Exception as e:
-            mark_failure(p, mid, 503, {}, str(e)[:120])
-            print(f'[Router] probe failed -> {p["id"]}/{mid}: {e}', flush=True)
+            fail(p, mid, 503, str(e)[:100])
 
 
 def monitor():
     global last_probe
     while True:
         try:
-            if time.time() - last_refresh > REFRESH:
-                refresh()
+            if time.time() - last_refresh > REFRESH: refresh()
             if time.time() - last_probe > PROBE_EVERY:
-                probe_best_models()
-                last_probe = time.time()
+                probe(); last_probe = time.time()
         except Exception as e:
             print('[Router] monitor error:', e, flush=True)
         time.sleep(30)
