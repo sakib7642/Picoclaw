@@ -38,7 +38,7 @@ RUN make build-launcher
 RUN test -x build/picoclaw && test -x build/picoclaw-launcher
 
 # ============================================================
-# Stage 2: Build current llama.cpp CPU server
+# Stage 2: Build current llama.cpp CPU server with multimodal support
 # ============================================================
 FROM debian:bookworm-slim AS llama-builder
 
@@ -62,9 +62,9 @@ RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git . \
     && build/bin/llama-server --version
 
 # ============================================================
-# Stage 3: Qwen3.5-0.8B local model
-# IQ2_M is ~370 MB and is selected for Render Free's 512 MB RAM
-# limit. The model includes Qwen3.5 chat-template metadata.
+# Stage 3: Official SmolVLM-256M-Instruct multimodal model
+# Q8 main model ~175 MB + Q8 vision projector ~104 MB.
+# This keeps the full text+image stack far below Qwen3.5's size.
 # ============================================================
 FROM debian:bookworm-slim AS model-downloader
 
@@ -75,9 +75,14 @@ RUN apt-get update \
 WORKDIR /models
 
 RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
-    -o Qwen_Qwen3.5-0.8B-IQ2_M.gguf \
-    "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen_Qwen3.5-0.8B-IQ2_M.gguf" \
-    && test -s Qwen_Qwen3.5-0.8B-IQ2_M.gguf
+    -o SmolVLM-256M-Instruct-Q8_0.gguf \
+    "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/SmolVLM-256M-Instruct-Q8_0.gguf" \
+    && test -s SmolVLM-256M-Instruct-Q8_0.gguf
+
+RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
+    -o mmproj-SmolVLM-256M-Instruct-Q8_0.gguf \
+    "https://huggingface.co/ggml-org/SmolVLM-256M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf" \
+    && test -s mmproj-SmolVLM-256M-Instruct-Q8_0.gguf
 
 # ============================================================
 # Stage 4: Runtime - official PicoClaw WebUI + smart router
@@ -95,7 +100,8 @@ ENV LD_LIBRARY_PATH="/app/llama-bin"
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
 COPY --from=llama-builder /src/llama.cpp/build/bin/ /app/llama-bin/
-COPY --from=model-downloader /models/Qwen_Qwen3.5-0.8B-IQ2_M.gguf /app/models/Qwen_Qwen3.5-0.8B-IQ2_M.gguf
+COPY --from=model-downloader /models/SmolVLM-256M-Instruct-Q8_0.gguf /app/models/SmolVLM-256M-Instruct-Q8_0.gguf
+COPY --from=model-downloader /models/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf /app/models/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf
 
 COPY config/ /config/
 COPY scripts/ /app/scripts/
