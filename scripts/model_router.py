@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 HOST = os.getenv('ROUTER_HOST', '127.0.0.1')
 PORT = int(os.getenv('ROUTER_PORT', '8100'))
 LOCAL_BASE = os.getenv('LOCAL_MODEL_BASE', 'http://127.0.0.1:8000/v1').rstrip('/')
-LOCAL_MODEL_ID = 'mobilellm-350m'
+LOCAL_MODEL_ID = 'mobilellm-376m'
 REFRESH = int(os.getenv('ROUTER_REFRESH_SECONDS', '300'))
 PROBE_EVERY = int(os.getenv('ROUTER_PROBE_SECONDS', '900'))
 TIMEOUT = int(os.getenv('ROUTER_TIMEOUT_SECONDS', '120'))
@@ -43,8 +43,6 @@ BAD_MODEL_WORDS = (
     'image', 'vision-embedding', 'audio'
 )
 
-# Model quality is ranked dynamically from the provider's /models response.
-# Bigger score = preferred. The router never hardcodes one provider's model.
 TOP_PATTERNS = [
     (150, r'gpt-oss-120b|gpt-5|gpt-4\.1'),
     (149, r'claude.*sonnet|claude.*opus'),
@@ -84,7 +82,9 @@ def load_state():
 
 
 def save_state():
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    directory = os.path.dirname(STATE_FILE)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
     tmp = STATE_FILE + '.tmp'
     with state_lock:
         data = {
@@ -111,7 +111,6 @@ def all_provider_defs():
     for p in state.get('custom_providers', []):
         if p.get('id') and p.get('api_key_env') and p.get('base_url'):
             defs.append((p['id'], p['api_key_env'], p['base_url'].rstrip('/'), int(p.get('priority', 70))))
-    # Last definition wins for custom overrides.
     merged = {}
     for item in defs:
         merged[item[0]] = item
@@ -158,12 +157,6 @@ def provider_state(pid):
     })
 
 
-def parse_quota_reset(headers):
-    # A 429 means the current quota bucket is treated as exhausted for 24h.
-    # We deliberately do not retry sooner just because Retry-After is short.
-    return QUOTA_COOLDOWN
-
-
 def discover(p):
     ps = provider_state(p['id'])
     try:
@@ -171,7 +164,7 @@ def discover(p):
             p['base'] + '/models',
             headers={
                 'Authorization': 'Bearer ' + p['key'],
-                'User-Agent': 'PicoClaw-OmniRouter/2.0',
+                'User-Agent': 'PicoClaw-OmniRouter/2.1',
                 'Accept': 'application/json',
             },
         )
@@ -180,8 +173,9 @@ def discover(p):
         ids = [str(x['id']) for x in data.get('data', []) if isinstance(x, dict) and x.get('id')]
         now = time.time()
         with state_lock:
+            old = ps.get('models', {})
             ps['models'] = {
-                mid: ps.get('models', {}).get(mid, {
+                mid: old.get(mid, {
                     'cooldown': 0.0,
                     'last_ok': 0.0,
                     'last_probe': 0.0,
@@ -241,7 +235,7 @@ def candidates():
 def mark_failure(p, mid, status, headers, detail=''):
     now = time.time()
     if status == 429:
-        cooldown = parse_quota_reset(headers)
+        cooldown = QUOTA_COOLDOWN
     elif status in (401, 403):
         cooldown = QUOTA_COOLDOWN
     elif status in (400, 404, 422):
@@ -288,7 +282,7 @@ def upstream(p, mid, payload):
             'Authorization': 'Bearer ' + p['key'],
             'Content-Type': 'application/json',
             'Accept': 'text/event-stream, application/json',
-            'User-Agent': 'PicoClaw-OmniRouter/2.0',
+            'User-Agent': 'PicoClaw-OmniRouter/2.1',
         },
         method='POST',
     )
@@ -326,7 +320,7 @@ def do_request(payload):
             errors.append(f'{p["id"]}/{mid}: {type(e).__name__}')
         except Exception as e:
             mark_failure(p, mid, 503, {}, str(e)[:120])
-            errors.append(f'{p["id"]}/{mid}: {type(e).__name__}')
+            errors.append(f'{p["id"]/{mid}: {type(e).__name__}')
     try:
         return local_upstream(payload), 'local', LOCAL_MODEL_ID, errors
     except Exception as e:
@@ -342,7 +336,7 @@ def auth_ok(handler):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'PicoClaw-OmniRouter/2.0'
+    server_version = 'PicoClaw-OmniRouter/2.1'
 
     def log_message(self, fmt, *args):
         print('[Router] ' + fmt % args, flush=True)
@@ -390,8 +384,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with state_lock:
                 snapshot = json.loads(json.dumps(state))
-            for ps in snapshot.get('providers', {}).values():
-                ps.pop('key', None)
             self._json(200, {
                 'active_providers': [p['id'] for p in provider_defs()],
                 'candidates': [
@@ -506,9 +498,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def probe_best_models():
-    # One tiny real request per active provider periodically verifies that the
-    # provider/model can actually answer. This is intentionally conservative so
-    # health checking does not burn an entire free quota by itself.
     for p in provider_defs():
         ps = provider_state(p['id'])
         if ps.get('cooldown', 0) > time.time():
