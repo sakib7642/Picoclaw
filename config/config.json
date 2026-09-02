@@ -4,19 +4,24 @@
     "defaults": {
       "workspace": "/root/.picoclaw/workspace",
       "restrict_to_workspace": true,
-      "max_tokens": 2048,
-      "model_name": "tinyllama"
+      "max_tokens": 512,
+      "context_window": 4096,
+      "temperature": 0.7,
+      "max_tool_iterations": 8,
+      "max_parallel_turns": 1,
+      "model_name": "qwen3.5-0.8b"
     }
   },
   "model_list": [
     {
-      "model_name": "tinyllama",
+      "model_name": "qwen3.5-0.8b",
       "provider": "openai",
-      "model": "tinyllama-1.1b.chat-v1.0.Q4_K_M.gguf",
+      "model": "qwen3.5-0.8b",
       "api_base": "http://127.0.0.1:8000/v1",
       "api_keys": [
         "local"
-      ]
+      ],
+      "request_timeout": 180
     }
   ],
   "gateway": {
