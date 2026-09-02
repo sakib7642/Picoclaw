@@ -72,13 +72,12 @@ RUN apt-get update \
 
 WORKDIR /models
 
-# MobileLLM-350M is used only as the last-resort local model. Q4_K_M is
-# about 273 MB, leaving substantially more RAM than the previous Qwen build.
-# The GGUF is a conversion of Meta's facebook/MobileLLM-350M weights.
+# The upstream facebook/MobileLLM-350M weights are represented by the
+# 376M-parameter GGUF conversion below. Q4_K_M is about 273 MB.
 RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
-    -o MobileLLM-350M.Q4_K_M.gguf \
-    "https://huggingface.co/pjh64/MobileLLM-350M-GGUF/resolve/main/MobileLLM-350M.Q4_K_M.gguf" \
-    && test -s MobileLLM-350M.Q4_K_M.gguf
+    -o MobileLLM-376M-Q4_K_M.gguf \
+    "https://huggingface.co/pjh64/MobileLLM-350M-GGUF/resolve/main/MobileLLM-376M-Q4_K_M.gguf" \
+    && test -s MobileLLM-376M-Q4_K_M.gguf
 
 # ============================================================
 # Stage 4: Runtime - official PicoClaw WebUI + OmniRouter + local fallback
@@ -94,7 +93,7 @@ WORKDIR /app
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
 COPY --from=llama-builder /src/llama.cpp/build/bin/llama-server /app/llama-server
-COPY --from=model-downloader /models/MobileLLM-350M.Q4_K_M.gguf /app/models/MobileLLM-350M.Q4_K_M.gguf
+COPY --from=model-downloader /models/MobileLLM-376M-Q4_K_M.gguf /app/models/MobileLLM-376M-Q4_K_M.gguf
 
 COPY config/ /config/
 COPY scripts/ /app/scripts/
