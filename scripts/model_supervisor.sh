@@ -3,12 +3,12 @@ set -eu
 
 MODEL_HOST="${LOCAL_MODEL_HOST:-127.0.0.1}"
 MODEL_PORT="${LOCAL_MODEL_PORT:-8000}"
-MODEL_PATH="/app/models/MobileLLM-376M-Q4_K_M.gguf"
+MODEL_PATH="/app/models/MobileLLM-350M-Q4_K_S.gguf"
 THREADS="${LOCAL_MODEL_THREADS:-1}"
 CTX="${LOCAL_MODEL_CONTEXT:-1024}"
 
 while :; do
-    echo "[MobileLLM-Supervisor] starting llama.cpp on ${MODEL_HOST}:${MODEL_PORT}"
+    echo "[MobileLLM-Supervisor] starting MobileLLM-350M on ${MODEL_HOST}:${MODEL_PORT}"
 
     if /app/llama-server \
         --model "${MODEL_PATH}" \
