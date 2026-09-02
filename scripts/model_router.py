@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Small OpenAI-compatible model router for PicoClaw.
+
+MobileLLM is the visible PicoClaw model and the guaranteed local fallback.
+Hosted providers are optional: a provider becomes active only when its API
+key environment variable is present. Models are discovered from /models and
+ranked dynamically. The local agent can manage provider/model state through
+localhost-only admin endpoints when no router password is configured.
+"""
 import json
 import os
 import re
@@ -12,41 +20,51 @@ HOST = os.getenv('ROUTER_HOST', '127.0.0.1')
 PORT = int(os.getenv('ROUTER_PORT', '8100'))
 LOCAL_BASE = os.getenv('LOCAL_MODEL_BASE', 'http://127.0.0.1:8000/v1').rstrip('/')
 LOCAL_MODEL_ID = os.getenv('LOCAL_MODEL_ID', 'mobilellm-376m')
-REFRESH = int(os.getenv('ROUTER_REFRESH_SECONDS', '300'))
-PROBE_EVERY = int(os.getenv('ROUTER_PROBE_SECONDS', '900'))
-TIMEOUT = int(os.getenv('ROUTER_TIMEOUT_SECONDS', '120'))
-QUOTA_COOLDOWN = int(os.getenv('ROUTER_QUOTA_COOLDOWN_SECONDS', '86400'))
+REFRESH = max(30, int(os.getenv('ROUTER_REFRESH_SECONDS', '300')))
+PROBE_EVERY = max(0, int(os.getenv('ROUTER_PROBE_SECONDS', '0')))
+TIMEOUT = max(30, int(os.getenv('ROUTER_TIMEOUT_SECONDS', '180')))
+QUOTA_COOLDOWN = max(60, int(os.getenv('ROUTER_QUOTA_COOLDOWN_SECONDS', '86400')))
 STATE_FILE = os.getenv('ROUTER_STATE_FILE', '/root/.picoclaw/router-state.json')
 ADMIN_PASSWORD = os.getenv('ROUTER_ADMIN_PASSWORD', os.getenv('PICOCLAW_WEBUI_PASSWORD', '')).strip()
 
-# Provider adapters are enabled only when their API-key environment variable
-# is present. Additional OpenAI-compatible providers can be added at runtime.
+# Common OpenAI-compatible hosted/proxy endpoints. Arbitrary compatible
+# gateways can be added through ROUTER_EXTRA_PROVIDERS_JSON.
 BUILTIN_PROVIDERS = [
-    ('openrouter', 'OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1', 100),
-    ('groq', 'GROQ_API_KEY', 'https://api.groq.com/openai/v1', 98),
-    ('cerebras', 'CEREBRAS_API_KEY', 'https://api.cerebras.ai/v1', 97),
-    ('gemini', 'GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai', 96),
-    ('together', 'TOGETHER_API_KEY', 'https://api.together.xyz/v1', 94),
-    ('fireworks', 'FIREWORKS_API_KEY', 'https://api.fireworks.ai/inference/v1', 92),
-    ('xai', 'XAI_API_KEY', 'https://api.x.ai/v1', 90),
-    ('mistral', 'MISTRAL_API_KEY', 'https://api.mistral.ai/v1', 88),
-    ('deepseek', 'DEEPSEEK_API_KEY', 'https://api.deepseek.com/v1', 86),
-    ('huggingface', 'HF_TOKEN', 'https://router.huggingface.co/v1', 84),
-    ('cohere', 'COHERE_API_KEY', 'https://api.cohere.ai/compatibility/v1', 82),
-    ('openai', 'OPENAI_API_KEY', 'https://api.openai.com/v1', 80),
+    ('openrouter', 'OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1', 110),
+    ('groq', 'GROQ_API_KEY', 'https://api.groq.com/openai/v1', 108),
+    ('cerebras', 'CEREBRAS_API_KEY', 'https://api.cerebras.ai/v1', 107),
+    ('gemini', 'GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai', 106),
+    ('together', 'TOGETHER_API_KEY', 'https://api.together.xyz/v1', 104),
+    ('fireworks', 'FIREWORKS_API_KEY', 'https://api.fireworks.ai/inference/v1', 103),
+    ('xai', 'XAI_API_KEY', 'https://api.x.ai/v1', 102),
+    ('mistral', 'MISTRAL_API_KEY', 'https://api.mistral.ai/v1', 101),
+    ('deepseek', 'DEEPSEEK_API_KEY', 'https://api.deepseek.com/v1', 100),
+    ('openai', 'OPENAI_API_KEY', 'https://api.openai.com/v1', 99),
+    ('zhipu', 'ZHIPU_API_KEY', 'https://open.bigmodel.cn/api/paas/v4', 98),
+    ('qwen', 'QWEN_API_KEY', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 97),
+    ('moonshot', 'MOONSHOT_API_KEY', 'https://api.moonshot.ai/v1', 96),
+    ('minimax', 'MINIMAX_API_KEY', 'https://api.minimax.io/v1', 95),
+    ('nvidia', 'NVIDIA_API_KEY', 'https://integrate.api.nvidia.com/v1', 94),
+    ('venice', 'VENICE_API_KEY', 'https://api.venice.ai/api/v1', 93),
+    ('huggingface', 'HF_TOKEN', 'https://router.huggingface.co/v1', 92),
+    ('cohere', 'COHERE_API_KEY', 'https://api.cohere.ai/compatibility/v1', 91),
+    ('vivgrid', 'VIVGRID_API_KEY', 'https://api.vivgrid.com/v1', 90),
+    ('longcat', 'LONGCAT_API_KEY', 'https://api.longcat.chat/openai', 89),
+    ('modelscope', 'MODELSCOPE_API_KEY', 'https://api-inference.modelscope.cn/v1', 88),
+    ('byteplus', 'BYTEPLUS_API_KEY', 'https://ark.ap-southeast.bytepluses.com/api/v3', 87),
 ]
-BAD = ('embedding', 'embed', 'moderation', 'rerank', 'tts', 'speech', 'whisper', 'audio')
+BAD_MODEL_WORDS = ('embedding', 'embed', 'moderation', 'rerank', 'tts', 'speech', 'whisper', 'audio', 'image', 'vision-encoder')
 PATTERNS = [
-    (150, r'gpt-oss-120b|gpt-5|gpt-4\.1'),
-    (149, r'claude.*sonnet|claude.*opus'),
-    (148, r'gemini-3.*flash'),
-    (147, r'kimi.*k2'),
-    (146, r'glm-5|glm-4\.7'),
-    (145, r'qwen3.*(235b|72b|32b|30b|27b)|qwen3\.5.*9b'),
-    (144, r'deepseek-v4|deepseek-r1|deepseek-chat'),
-    (143, r'gemma-4.*27b|gemma-3.*27b'),
-    (142, r'llama-4|llama-3\.3-70b'),
-    (135, r'llama.*8b|qwen.*14b|qwen.*7b|command-a'),
+    (160, r'gpt-oss-120b|gpt-5(?:\.|$)|gpt-4\.1'),
+    (159, r'claude.*(?:sonnet|opus)'),
+    (158, r'gemini-3.*flash'),
+    (157, r'kimi.*k2'),
+    (156, r'glm-5|glm-4\.7'),
+    (155, r'qwen3.*(?:235b|110b|72b|32b|30b|27b)|qwen3\.5.*9b'),
+    (154, r'deepseek-v4|deepseek-r1|deepseek-chat'),
+    (153, r'gemma-4.*27b|gemma-3.*27b'),
+    (152, r'llama-4|llama-3\.3-70b'),
+    (145, r'llama.*8b|qwen.*14b|qwen.*7b|command-a'),
 ]
 
 lock = threading.RLock()
@@ -109,35 +127,35 @@ def pstate(pid):
     return state.setdefault('providers', {}).setdefault(pid, {'cooldown': 0, 'models': {}, 'ok': False, 'last_error': ''})
 
 
-def score(mid, pri):
-    low = mid.lower()
-    if any(x in low for x in BAD):
+def score(model_id, priority):
+    low = model_id.lower()
+    if any(x in low for x in BAD_MODEL_WORDS):
         return -100000
-    value = pri
+    value = priority
     for points, pattern in PATTERNS:
         if re.search(pattern, low):
             value += points
             break
     if ':free' in low or low.endswith('-free'):
-        value += 5
+        value += 8
     if 'preview' in low or 'experimental' in low:
-        value -= 2
+        value -= 3
     if 'instruct' in low or 'chat' in low:
         value += 3
     return value
 
 
-def discover(p):
-    ps = pstate(p['id'])
+def discover(provider):
+    ps = pstate(provider['id'])
     try:
-        req = Request(p['base'] + '/models', headers={'Authorization': 'Bearer ' + p['key'], 'Accept': 'application/json', 'User-Agent': 'PicoClaw-OmniRouter/2.2'})
-        with urlopen(req, timeout=20) as r:
-            data = json.loads(r.read().decode('utf-8', 'replace'))
+        req = Request(provider['base'] + '/models', headers={'Authorization': 'Bearer ' + provider['key'], 'Accept': 'application/json', 'User-Agent': 'PicoClaw-ModelRouter/3.0'})
+        with urlopen(req, timeout=20) as response:
+            data = json.loads(response.read().decode('utf-8', 'replace'))
         ids = [str(x['id']) for x in data.get('data', []) if isinstance(x, dict) and x.get('id')]
         old = ps.get('models', {})
-        ps['models'] = {mid: old.get(mid, {'cooldown': 0, 'failures': 0, 'last_ok': 0, 'score': score(mid, p['priority'])}) for mid in ids}
+        ps['models'] = {mid: old.get(mid, {'cooldown': 0, 'failures': 0, 'last_ok': 0, 'score': score(mid, provider['priority'])}) for mid in ids}
         for mid in ids:
-            ps['models'][mid]['score'] = score(mid, p['priority'])
+            ps['models'][mid]['score'] = score(mid, provider['priority'])
         ps['ok'] = True
         ps['last_error'] = ''
         ps['last_refresh'] = time.time()
@@ -154,33 +172,46 @@ def discover(p):
 
 def refresh():
     global last_refresh
-    for p in provider_defs():
-        discover(p)
+    providers = provider_defs()
+    for provider in providers:
+        discover(provider)
     last_refresh = time.time()
-    print('[Router] active providers: ' + ', '.join(p['id'] for p in provider_defs()) if provider_defs() else '[Router] active providers: none', flush=True)
+    print('[Router] active providers: ' + (', '.join(p['id'] for p in providers) if providers else 'none'), flush=True)
 
 
 def candidates():
     now = time.time()
     disabled = set(state.get('disabled_models', []))
     out = []
-    for p in provider_defs():
-        ps = pstate(p['id'])
+    for provider in provider_defs():
+        ps = pstate(provider['id'])
         if ps.get('cooldown', 0) > now:
             continue
         for mid, ms in ps.get('models', {}).items():
-            if f'{p["id"]}/{mid}' in disabled or ms.get('cooldown', 0) > now or ms.get('score', -100000) < 0:
+            key = f'{provider["id"]}/{mid}'
+            if key in disabled or ms.get('cooldown', 0) > now:
                 continue
-            out.append((ms.get('score', score(mid, p['priority'])) - min(ms.get('failures', 0) * 10, 50), p, mid))
+            value = ms.get('score', score(mid, provider['priority']))
+            if value < 0:
+                continue
+            value -= min(ms.get('failures', 0) * 12, 60)
+            out.append((value, provider, mid))
     out.sort(key=lambda x: x[0], reverse=True)
     return out
 
 
-def fail(p, mid, status, detail=''):
+def fail(provider, model_id, status, detail=''):
     now = time.time()
-    cooldown = QUOTA_COOLDOWN if status in (401, 403, 429) else 6 * 3600 if status in (400, 404, 422) else 120 if status >= 500 else 300
-    ps = pstate(p['id'])
-    ms = ps['models'].setdefault(mid, {'cooldown': 0, 'failures': 0, 'last_ok': 0, 'score': score(mid, p['priority'])})
+    if status in (401, 403, 429):
+        cooldown = QUOTA_COOLDOWN
+    elif status in (400, 404, 422):
+        cooldown = 6 * 3600
+    elif status >= 500:
+        cooldown = 120
+    else:
+        cooldown = 300
+    ps = pstate(provider['id'])
+    ms = ps['models'].setdefault(model_id, {'cooldown': 0, 'failures': 0, 'last_ok': 0, 'score': score(model_id, provider['priority'])})
     ms['failures'] = ms.get('failures', 0) + 1
     ms['cooldown'] = now + cooldown
     ps['last_error'] = f'HTTP {status}: {detail}'[:300]
@@ -189,9 +220,9 @@ def fail(p, mid, status, detail=''):
     save_state()
 
 
-def success(p, mid):
-    ps = pstate(p['id'])
-    ms = ps['models'].setdefault(mid, {})
+def success(provider, model_id):
+    ps = pstate(provider['id'])
+    ms = ps['models'].setdefault(model_id, {})
     ms['last_ok'] = time.time()
     ms['failures'] = max(0, ms.get('failures', 0) - 1)
     ms['cooldown'] = 0
@@ -209,7 +240,7 @@ def post_chat(base, key, model, payload):
         'Authorization': 'Bearer ' + key,
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream, application/json',
-        'User-Agent': 'PicoClaw-OmniRouter/2.2',
+        'User-Agent': 'PicoClaw-ModelRouter/3.0',
     })
     return urlopen(req, timeout=TIMEOUT)
 
@@ -219,32 +250,34 @@ def route(payload):
     if time.time() - last_refresh > REFRESH:
         refresh()
     errors = []
-    for _, p, mid in candidates():
+    for _, provider, model_id in candidates():
         try:
-            return post_chat(p['base'], p['key'], mid, payload), p['id'], mid
+            return post_chat(provider['base'], provider['key'], model_id, payload), provider['id'], model_id
         except HTTPError as e:
             detail = e.read().decode('utf-8', 'replace')[:180]
-            fail(p, mid, e.code, detail)
-            errors.append(f'{p["id"]}/{mid}: HTTP {e.code}')
+            fail(provider, model_id, e.code, detail)
+            errors.append(f'{provider["id"]}/{model_id}: HTTP {e.code}')
         except (URLError, TimeoutError, OSError) as e:
-            fail(p, mid, 503, str(e)[:100])
-            errors.append(f'{p["id"]}/{mid}: network')
+            fail(provider, model_id, 503, str(e)[:100])
+            errors.append(f'{provider["id"]}/{model_id}: network')
         except Exception as e:
-            fail(p, mid, 503, str(e)[:100])
-            errors.append(f'{p["id"]}/{mid}: error')
+            fail(provider, model_id, 503, str(e)[:100])
+            errors.append(f'{provider["id"]}/{model_id}: error')
     try:
         return post_chat(LOCAL_BASE, 'local', LOCAL_MODEL_ID, payload), 'local', LOCAL_MODEL_ID
     except Exception as e:
-        errors.append('local/' + LOCAL_MODEL_ID + ': ' + str(e)[:100])
-    raise RuntimeError('No working route: ' + '; '.join(errors[-10:]))
+        errors.append('local/' + LOCAL_MODEL_ID + ': ' + str(e)[:140])
+    raise RuntimeError('No working model route: ' + '; '.join(errors[-10:]))
 
 
 def admin_ok(handler):
-    return bool(ADMIN_PASSWORD) and handler.headers.get('Authorization', '') == 'Bearer ' + ADMIN_PASSWORD
+    if ADMIN_PASSWORD:
+        return handler.headers.get('Authorization', '') == 'Bearer ' + ADMIN_PASSWORD
+    return handler.client_address[0] in ('127.0.0.1', '::1')
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'PicoClaw-OmniRouter/2.2'
+    server_version = 'PicoClaw-ModelRouter/3.0'
 
     def log_message(self, fmt, *args):
         print('[Router] ' + fmt % args, flush=True)
@@ -259,18 +292,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self):
         n = int(self.headers.get('Content-Length', '0'))
-        return json.loads(self.rfile.read(n).decode('utf-8'))
+        return json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
 
     def do_GET(self):
         if self.path == '/health':
-            self.send_json(200, {'status': 'ok', 'hosted_candidates': len(candidates()), 'local_fallback': LOCAL_MODEL_ID})
+            self.send_json(200, {'status': 'ok', 'local_model': LOCAL_MODEL_ID, 'hosted_candidates': len(candidates()), 'active_providers': [p['id'] for p in provider_defs()]})
             return
         if self.path.startswith('/v1/models'):
             if time.time() - last_refresh > REFRESH:
                 refresh()
-            data = [{'id': 'omniroute', 'object': 'model', 'owned_by': 'picoclaw-router'}]
+            data = [{'id': LOCAL_MODEL_ID, 'object': 'model', 'owned_by': 'mobilellm'}]
             data += [{'id': f'{p["id"]}/{mid}', 'object': 'model', 'owned_by': p['id']} for _, p, mid in candidates()]
-            data.append({'id': LOCAL_MODEL_ID, 'object': 'model', 'owned_by': 'mobilellm'})
             self.send_json(200, {'object': 'list', 'data': data})
             return
         if self.path == '/admin/status':
@@ -279,7 +311,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with lock:
                 snapshot = json.loads(json.dumps(state))
-            self.send_json(200, {'active_providers': [p['id'] for p in provider_defs()], 'candidates': [{'provider': p['id'], 'model': mid, 'score': s} for s, p, mid in candidates()[:100]], 'state': snapshot})
+            self.send_json(200, {'local_model': LOCAL_MODEL_ID, 'active_providers': [p['id'] for p in provider_defs()], 'candidates': [{'provider': p['id'], 'model': mid, 'score': s} for s, p, mid in candidates()[:100]], 'state': snapshot})
             return
         self.send_json(404, {'error': 'not_found'})
 
@@ -305,10 +337,11 @@ class Handler(BaseHTTPRequestHandler):
                         state['custom_providers'].append({'id': pid, 'api_key_env': env, 'base_url': base, 'priority': int(b.get('priority', 70))})
                         disabled.discard(pid)
                     elif action == 'remove':
-                        state['custom_providers'] = [x for x in state.get('custom_providers', []) if x.get('id') != pid]; disabled.add(pid)
+                        state['custom_providers'] = [x for x in state.get('custom_providers', []) if x.get('id') != pid]
+                        disabled.add(pid)
                     else: raise ValueError('action must be add/remove/enable/disable')
                     state['disabled_providers'] = sorted(disabled); save_state(); refresh()
-                    self.send_json(200, {'ok': True}); return
+                    self.send_json(200, {'ok': True, 'active_providers': [p['id'] for p in provider_defs()]}); return
                 if self.path == '/admin/model':
                     action, provider, model = b.get('action'), str(b.get('provider', '')).strip(), str(b.get('model', '')).strip()
                     if not provider or not model: raise ValueError('provider and model are required')
@@ -316,7 +349,8 @@ class Handler(BaseHTTPRequestHandler):
                     if action in ('disable', 'remove'): disabled.add(key)
                     elif action in ('enable', 'add'): disabled.discard(key)
                     else: raise ValueError('action must be add/remove/enable/disable')
-                    state['disabled_models'] = sorted(disabled); save_state(); self.send_json(200, {'ok': True, 'disabled': key in disabled}); return
+                    state['disabled_models'] = sorted(disabled); save_state()
+                    self.send_json(200, {'ok': True, 'disabled': key in disabled}); return
                 self.send_json(404, {'error': 'unknown_admin_endpoint'})
             except Exception as e:
                 self.send_json(400, {'error': str(e)})
@@ -327,42 +361,49 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self.body()
             payload.pop('router_debug', None)
-            r, pid, mid = route(payload)
-            if pid != 'local':
-                p = next((x for x in provider_defs() if x['id'] == pid), None)
-                if p: success(p, mid)
-            self.send_response(r.status)
-            for k, v in r.headers.items():
-                if k.lower() in ('content-length', 'transfer-encoding', 'connection', 'server', 'date'):
+            response, provider_id, model_id = route(payload)
+            if provider_id != 'local':
+                provider = next((x for x in provider_defs() if x['id'] == provider_id), None)
+                if provider: success(provider, model_id)
+            self.send_response(response.status)
+            for key, value in response.headers.items():
+                if key.lower() in ('content-length', 'transfer-encoding', 'connection', 'server', 'date'):
                     continue
-                self.send_header(k, v)
-            self.send_header('X-PicoClaw-Route', pid + '/' + mid)
+                self.send_header(key, value)
+            self.send_header('X-PicoClaw-Route', provider_id + '/' + model_id)
             self.end_headers()
             while True:
-                chunk = r.read(8192)
+                chunk = response.read(8192)
                 if not chunk: break
-                self.wfile.write(chunk); self.wfile.flush()
-            r.close()
-            print('[Router] routed -> ' + pid + '/' + mid, flush=True)
+                try:
+                    self.wfile.write(chunk); self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+            response.close()
+            print('[Router] routed -> ' + provider_id + '/' + model_id, flush=True)
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception as e:
-            self.send_json(503, {'error': {'message': str(e), 'type': 'router_unavailable'}})
+            print('[Router] request error:', repr(e), flush=True)
+            try: self.send_json(503, {'error': {'message': str(e), 'type': 'router_unavailable'}})
+            except (BrokenPipeError, ConnectionResetError): pass
 
 
 def probe():
-    for p in provider_defs():
-        if pstate(p['id']).get('cooldown', 0) > time.time():
-            continue
-        cs = [x for x in candidates() if x[1]['id'] == p['id']]
+    if PROBE_EVERY <= 0: return
+    for provider in provider_defs():
+        if pstate(provider['id']).get('cooldown', 0) > time.time(): continue
+        cs = [x for x in candidates() if x[1]['id'] == provider['id']]
         if not cs: continue
-        _, _, mid = cs[0]
+        _, _, model_id = cs[0]
         try:
-            r = post_chat(p['base'], p['key'], mid, {'messages': [{'role': 'user', 'content': 'OK'}], 'max_tokens': 1, 'temperature': 0, 'stream': False})
-            r.read(2048); r.close(); success(p, mid)
-            print('[Router] probe OK -> ' + p['id'] + '/' + mid, flush=True)
+            response = post_chat(provider['base'], provider['key'], model_id, {'messages': [{'role': 'user', 'content': 'OK'}], 'max_tokens': 1, 'temperature': 0, 'stream': False})
+            response.read(2048); response.close(); success(provider, model_id)
+            print('[Router] probe OK -> ' + provider['id'] + '/' + model_id, flush=True)
         except HTTPError as e:
-            fail(p, mid, e.code, e.read().decode('utf-8', 'replace')[:120])
+            fail(provider, model_id, e.code, e.read().decode('utf-8', 'replace')[:120])
         except Exception as e:
-            fail(p, mid, 503, str(e)[:100])
+            fail(provider, model_id, 503, str(e)[:100])
 
 
 def monitor():
@@ -370,7 +411,7 @@ def monitor():
     while True:
         try:
             if time.time() - last_refresh > REFRESH: refresh()
-            if time.time() - last_probe > PROBE_EVERY:
+            if PROBE_EVERY > 0 and time.time() - last_probe > PROBE_EVERY:
                 probe(); last_probe = time.time()
         except Exception as e:
             print('[Router] monitor error:', e, flush=True)
@@ -378,8 +419,7 @@ def monitor():
 
 
 if __name__ == '__main__':
-    load_state()
-    refresh()
+    load_state(); refresh()
     threading.Thread(target=monitor, daemon=True).start()
-    print(f'[Router] listening on {HOST}:{PORT}', flush=True)
+    print(f'[Router] listening on {HOST}:{PORT}; local model={LOCAL_MODEL_ID}', flush=True)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
