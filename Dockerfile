@@ -57,9 +57,8 @@ RUN mkdir -p /opt/llama \
     && rm -f /tmp/llama.tgz \
     && LLAMA_SERVER="$(find /opt/llama -type f -name llama-server -print -quit)" \
     && test -n "${LLAMA_SERVER}" \
-    && cp "${LLAMA_SERVER}" /opt/llama-server \
     && LIB_PATHS="$(find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u | tr '\\n' ':')" \
-    && LD_LIBRARY_PATH="${LIB_PATHS}:/opt/llama" /opt/llama-server --version
+    && LD_LIBRARY_PATH="${LIB_PATHS}:/opt/llama" "${LLAMA_SERVER}" --version
 
 # ============================================================
 # Stage 3: Qwen3.5-0.8B Q4_K_M GGUF
@@ -90,7 +89,6 @@ WORKDIR /app
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
 COPY --from=llama-builder /opt/llama/ /opt/llama/
-COPY --from=llama-builder /opt/llama-server /app/llama-server
 
 RUN mkdir -p /app/models
 COPY --from=model-downloader /models/Qwen3.5-0.8B.Q4_K_M.gguf /app/models/Qwen3.5-0.8B.Q4_K_M.gguf
@@ -99,7 +97,12 @@ COPY config/ /config/
 COPY scripts/ /app/scripts/
 COPY entrypoint.sh /entrypoint.sh
 
-RUN find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u > /etc/ld.so.conf.d/llama.conf \
+# Keep llama-server next to its bundled shared libraries so its own
+# relative library lookup continues to work.
+RUN LLAMA_SERVER="$(find /opt/llama -type f -name llama-server -print -quit)" \
+    && test -n "${LLAMA_SERVER}" \
+    && ln -sf "${LLAMA_SERVER}" /app/llama-server \
+    && find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u > /etc/ld.so.conf.d/llama.conf \
     && ldconfig \
     && chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts/model_supervisor.sh /entrypoint.sh \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
