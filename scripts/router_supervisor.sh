@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 while :; do
-    echo '[Router-Supervisor] starting OmniRoute-compatible model router'
+    echo '[Router-Supervisor] starting MobileLLM-aware model router'
     if python3 /app/scripts/model_router.py; then
         status=0
     else
