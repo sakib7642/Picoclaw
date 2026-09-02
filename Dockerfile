@@ -39,7 +39,7 @@ RUN test -x build/picoclaw && test -x build/picoclaw-launcher
 FROM debian:bookworm-slim AS llama-builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tar grep findutils \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar grep findutils libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 ARG LLAMA_TAG=b10695
@@ -77,7 +77,7 @@ RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
 FROM python:3.12-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tzdata findutils \
+    && apt-get install -y --no-install-recommends ca-certificates curl tzdata findutils libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
