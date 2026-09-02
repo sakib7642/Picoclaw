@@ -4,19 +4,19 @@
     "defaults": {
       "workspace": "/root/.picoclaw/workspace",
       "restrict_to_workspace": true,
-      "max_tokens": 256,
-      "context_window": 1024,
+      "max_tokens": 192,
+      "context_window": 512,
       "temperature": 0.7,
-      "max_tool_iterations": 8,
+      "max_tool_iterations": 6,
       "max_parallel_turns": 1,
-      "model_name": "mobilellm-376m"
+      "model_name": "qwen3.5-0.8b"
     }
   },
   "model_list": [
     {
-      "model_name": "mobilellm-376m",
+      "model_name": "qwen3.5-0.8b",
       "provider": "openai",
-      "model": "mobilellm-376m",
+      "model": "qwen3.5-0.8b",
       "api_base": "http://127.0.0.1:8100/v1",
       "api_keys": ["local-router"],
       "request_timeout": 240,
