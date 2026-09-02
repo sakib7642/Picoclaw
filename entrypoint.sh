@@ -6,14 +6,13 @@ MODEL_HOST="${LOCAL_MODEL_HOST:-127.0.0.1}"
 MODEL_PORT="${LOCAL_MODEL_PORT:-8000}"
 ROUTER_HOST="${ROUTER_HOST:-127.0.0.1}"
 ROUTER_PORT="${ROUTER_PORT:-8100}"
-MODEL_PATH="/app/models/SmolVLM-256M-Instruct-Q8_0.gguf"
-MMPROJ_PATH="/app/models/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf"
+MODEL_PATH="/app/models/SmolLM2-135M-Instruct-Q4_K_M.gguf"
 PICO_HOME="/root/.picoclaw"
 CONFIG_SOURCE="/config/config.json"
 CONFIG_PATH="${PICO_HOME}/config.json"
 
 printf '%s\n' '=================================================='
-printf '%s\n' ' PicoClaw WebUI + SmolVLM-256M multimodal + router'
+printf '%s\n' ' PicoClaw WebUI + SmolLM2-135M-Instruct + router'
 printf ' UTC: %s\n' "$(date -u)"
 printf ' Public WebUI port: %s\n' "${PORT}"
 printf ' Router API: %s:%s\n' "${ROUTER_HOST}" "${ROUTER_PORT}"
@@ -21,19 +20,15 @@ printf ' Local model API: %s:%s\n' "${MODEL_HOST}" "${MODEL_PORT}"
 printf '%s\n' '=================================================='
 
 mkdir -p "${PICO_HOME}/workspace" "${PICO_HOME}/logs"
-
-# Always install the bundled deployment config so a sleeping Render instance
-# cannot keep a stale previous model configuration on its ephemeral disk.
 cp "${CONFIG_SOURCE}" "${CONFIG_PATH}"
 
 export PICOCLAW_BINARY="/app/picoclaw"
-# Force the router fallback to the model actually bundled in this image.
-export LOCAL_MODEL_ID="smolvlm-256m"
+export LOCAL_MODEL_ID="smollm2-135m"
 
 printf '%s\n' '--- binaries ---'
 ls -lh /app/picoclaw /app/picoclaw-launcher /app/llama-server
-printf '%s\n' '--- local multimodal model ---'
-ls -lh "${MODEL_PATH}" "${MMPROJ_PATH}"
+printf '%s\n' '--- local text model ---'
+ls -lh "${MODEL_PATH}"
 printf '%s\n' '--- PicoClaw version ---'
 /app/picoclaw version || true
 printf '%s\n' '--- llama.cpp version ---'
@@ -51,19 +46,17 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-# Do not expose the public WebUI until the local multimodal model is genuinely ready.
 i=0
 while ! curl -fsS "http://${MODEL_HOST}:${MODEL_PORT}/health" >/dev/null 2>&1; do
     i=$((i + 1))
-    if [ "${i}" -ge 300 ]; then
-        echo 'ERROR: SmolVLM-256M local model did not become healthy within 300s.' >&2
+    if [ "${i}" -ge 180 ]; then
+        echo 'ERROR: SmolLM2-135M local model did not become healthy within 180s.' >&2
         exit 1
     fi
     sleep 1
 done
-echo 'SmolVLM-256M local model: healthy'
+echo 'SmolLM2-135M local model: healthy'
 
-# Wait for the router as well.
 i=0
 while ! curl -fsS "http://${ROUTER_HOST}:${ROUTER_PORT}/health" >/dev/null 2>&1; do
     i=$((i + 1))
