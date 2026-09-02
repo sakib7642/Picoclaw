@@ -63,8 +63,8 @@ RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git . \
 
 # ============================================================
 # Stage 3: Qwen3.5-0.8B local model
-# IQ2_M is ~400 MB and is selected for Render Free's 512 MB RAM
-# limit. The model includes its Qwen3.5 chat template metadata.
+# IQ2_M is ~370 MB and is selected for Render Free's 512 MB RAM
+# limit. The model includes Qwen3.5 chat-template metadata.
 # ============================================================
 FROM debian:bookworm-slim AS model-downloader
 
@@ -75,9 +75,9 @@ RUN apt-get update \
 WORKDIR /models
 
 RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
-    -o Qwen3.5-0.8B-IQ2_M.gguf \
-    "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-IQ2_M.gguf" \
-    && test -s Qwen3.5-0.8B-IQ2_M.gguf
+    -o Qwen_Qwen3.5-0.8B-IQ2_M.gguf \
+    "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen_Qwen3.5-0.8B-IQ2_M.gguf" \
+    && test -s Qwen_Qwen3.5-0.8B-IQ2_M.gguf
 
 # ============================================================
 # Stage 4: Runtime - official PicoClaw WebUI + smart router
@@ -95,7 +95,7 @@ ENV LD_LIBRARY_PATH="/app/llama-bin"
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
 COPY --from=llama-builder /src/llama.cpp/build/bin/ /app/llama-bin/
-COPY --from=model-downloader /models/Qwen3.5-0.8B-IQ2_M.gguf /app/models/Qwen3.5-0.8B-IQ2_M.gguf
+COPY --from=model-downloader /models/Qwen_Qwen3.5-0.8B-IQ2_M.gguf /app/models/Qwen_Qwen3.5-0.8B-IQ2_M.gguf
 
 COPY config/ /config/
 COPY scripts/ /app/scripts/
