@@ -9,18 +9,16 @@
       "temperature": 0.7,
       "max_tool_iterations": 6,
       "max_parallel_turns": 1,
-      "model_name": "qwen3.5-0.8b"
+      "model_name": "omniroute"
     }
   },
   "model_list": [
     {
-      "model_name": "qwen3.5-0.8b",
+      "model_name": "omniroute",
       "provider": "openai",
-      "model": "qwen3.5-0.8b",
-      "api_base": "http://127.0.0.1:8000/v1",
-      "api_keys": [
-        "local"
-      ],
+      "model": "omniroute",
+      "api_base": "http://127.0.0.1:8100/v1",
+      "api_keys": ["local-router"],
       "request_timeout": 240
     }
   ],
@@ -31,29 +29,13 @@
   },
   "channel_list": {},
   "tools": {
-    "web": {
-      "enabled": false
-    },
-    "exec": {
-      "enabled": true
-    },
-    "skills": {
-      "enabled": true
-    },
-    "read_file": {
-      "enabled": true
-    },
-    "write_file": {
-      "enabled": true
-    },
-    "list_dir": {
-      "enabled": true
-    }
+    "web": {"enabled": false},
+    "exec": {"enabled": true},
+    "skills": {"enabled": true},
+    "read_file": {"enabled": true},
+    "write_file": {"enabled": true},
+    "list_dir": {"enabled": true}
   },
-  "heartbeat": {
-    "enabled": false
-  },
-  "devices": {
-    "enabled": false
-  }
+  "heartbeat": {"enabled": false},
+  "devices": {"enabled": false}
 }
