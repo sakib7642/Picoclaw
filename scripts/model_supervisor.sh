@@ -5,10 +5,10 @@ MODEL_HOST="${LOCAL_MODEL_HOST:-127.0.0.1}"
 MODEL_PORT="${LOCAL_MODEL_PORT:-8000}"
 MODEL_PATH="/app/models/Qwen_Qwen3.5-0.8B-IQ2_M.gguf"
 THREADS="${LOCAL_MODEL_THREADS:-1}"
-CTX="${LOCAL_MODEL_CONTEXT:-512}"
+CTX="${LOCAL_MODEL_CONTEXT:-4096}"
 
 while :; do
-    echo "[Qwen3.5-Supervisor] starting Qwen3.5-0.8B on ${MODEL_HOST}:${MODEL_PORT}"
+    echo "[Qwen3.5-Supervisor] starting Qwen3.5-0.8B on ${MODEL_HOST}:${MODEL_PORT} (ctx=${CTX})"
 
     if /app/llama-server \
         --model "${MODEL_PATH}" \
