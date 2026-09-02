@@ -62,8 +62,11 @@ RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git . \
     && build/bin/llama-server --version
 
 # ============================================================
-# Stage 3: Small Facebook/Meta MobileLLM-350M local fallback
-# Q4_K_S is ~262 MB and is safer for Render Free's 512 MB RAM.
+# Stage 3: Small MobileLLM local fallback
+# The upstream GGUF repository is named MobileLLM-350M-GGUF, but
+# its actual published model files are named MobileLLM-376M-*.
+# Q4_K_S is ~262 MB and is the safest useful local fallback for
+# Render Free's 512 MB RAM limit.
 # ============================================================
 FROM debian:bookworm-slim AS model-downloader
 
@@ -74,9 +77,9 @@ RUN apt-get update \
 WORKDIR /models
 
 RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
-    -o MobileLLM-350M-Q4_K_S.gguf \
-    "https://huggingface.co/pjh64/MobileLLM-350M-GGUF/resolve/main/MobileLLM-350M-Q4_K_S.gguf" \
-    && test -s MobileLLM-350M-Q4_K_S.gguf
+    -o MobileLLM-376M-Q4_K_S.gguf \
+    "https://huggingface.co/pjh64/MobileLLM-350M-GGUF/resolve/main/MobileLLM-376M-Q4_K_S.gguf" \
+    && test -s MobileLLM-376M-Q4_K_S.gguf
 
 # ============================================================
 # Stage 4: Runtime - official PicoClaw WebUI + smart router
@@ -92,7 +95,7 @@ WORKDIR /app
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
 COPY --from=llama-builder /src/llama.cpp/build/bin/llama-server /app/llama-server
-COPY --from=model-downloader /models/MobileLLM-350M-Q4_K_S.gguf /app/models/MobileLLM-350M-Q4_K_S.gguf
+COPY --from=model-downloader /models/MobileLLM-376M-Q4_K_S.gguf /app/models/MobileLLM-376M-Q4_K_S.gguf
 
 COPY config/ /config/
 COPY scripts/ /app/scripts/
