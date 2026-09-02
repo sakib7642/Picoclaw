@@ -1,0 +1,51 @@
+name: Auto-update PicoClaw release
+
+on:
+  schedule:
+    # Check upstream releases once per day, away from the top of the hour.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Detect newest PicoClaw release
+        id: latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(git ls-remote --tags --sort='-v:refname' https://github.com/sipeed/picoclaw.git 'refs/tags/v*' \
+            | sed -n 's#.*refs/tags/\(v[0-9][^{}]*\)$#\1#p' \
+            | head -n 1)"
+          test -n "$latest"
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream PicoClaw release: $latest"
+
+      - name: Update release marker when needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest='${{ steps.latest.outputs.tag }}'
+          current=''
+          if [ -f .picoclaw-release ]; then
+            current="$(tr -d '[:space:]' < .picoclaw-release)"
+          fi
+          if [ "$current" = "$latest" ]; then
+            echo "Already on $latest"
+            exit 0
+          fi
+          printf '%s\n' "$latest" > .picoclaw-release
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .picoclaw-release
+          git commit -m "chore: update PicoClaw to $latest"
+          git push
