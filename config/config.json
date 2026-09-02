@@ -4,10 +4,10 @@
     "defaults": {
       "workspace": "/root/.picoclaw/workspace",
       "restrict_to_workspace": true,
-      "max_tokens": 512,
-      "context_window": 4096,
+      "max_tokens": 384,
+      "context_window": 2048,
       "temperature": 0.7,
-      "max_tool_iterations": 8,
+      "max_tool_iterations": 6,
       "max_parallel_turns": 1,
       "model_name": "qwen3.5-0.8b"
     }
@@ -21,7 +21,7 @@
       "api_keys": [
         "local"
       ],
-      "request_timeout": 180
+      "request_timeout": 240
     }
   ],
   "gateway": {
