@@ -39,11 +39,10 @@ RUN test -x build/picoclaw && test -x build/picoclaw-launcher
 FROM debian:bookworm-slim AS llama-builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tar grep \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar grep findutils \
     && rm -rf /var/lib/apt/lists/*
 
 ARG LLAMA_TAG=b10695
-ENV LD_LIBRARY_PATH="/opt/llama:/opt/llama/lib:/opt/llama/bin"
 
 RUN mkdir -p /opt/llama \
     && curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
@@ -54,10 +53,8 @@ RUN mkdir -p /opt/llama \
     && LLAMA_SERVER="$(find /opt/llama -type f -name llama-server -print -quit)" \
     && test -n "${LLAMA_SERVER}" \
     && cp "${LLAMA_SERVER}" /opt/llama-server \
-    && find /opt/llama -mindepth 2 -type f -name '*.so*' -exec cp -a {} /opt/llama/ \; \
-    && chmod +x /opt/llama-server
-
-RUN LD_LIBRARY_PATH="/opt/llama:/opt/llama/lib:/opt/llama/bin" /opt/llama-server --version
+    && LIB_PATHS="$(find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u | tr '\\n' ':')" \
+    && LD_LIBRARY_PATH="${LIB_PATHS}:/opt/llama" /opt/llama-server --version
 
 # ============================================================
 # Stage 3: Qwen3.5-0.8B Q4_K_M GGUF
@@ -80,7 +77,7 @@ RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
 FROM python:3.12-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tzdata \
+    && apt-get install -y --no-install-recommends ca-certificates curl tzdata findutils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -97,11 +94,13 @@ COPY config/ /config/
 COPY scripts/ /app/scripts/
 COPY entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts/model_supervisor.sh /entrypoint.sh \
+# Register every directory containing llama.cpp shared libraries with ldconfig.
+RUN find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u > /etc/ld.so.conf.d/llama.conf \
+    && ldconfig \
+    && chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts/model_supervisor.sh /entrypoint.sh \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
-    && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher
-
-ENV LD_LIBRARY_PATH="/opt/llama:/opt/llama/lib:/opt/llama/bin"
+    && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher \
+    && /app/llama-server --version
 
 EXPOSE 8080
 
