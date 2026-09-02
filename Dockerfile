@@ -35,8 +35,6 @@ RUN test -x build/picoclaw && test -x build/picoclaw-launcher
 
 # ============================================================
 # Stage 2: llama.cpp CPU server (OpenAI-compatible)
-# Qwen3.5 is not supported by PicoLM's current LLaMA-only engine,
-# so the local Qwen backend uses llama.cpp instead.
 # ============================================================
 FROM debian:bookworm-slim AS llama-builder
 
@@ -44,8 +42,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tar grep \
     && rm -rf /var/lib/apt/lists/*
 
-ARG LLAMA_TAG=b10516
-ENV LD_LIBRARY_PATH="/opt/llama:${LD_LIBRARY_PATH}"
+ARG LLAMA_TAG=b10695
+ENV LD_LIBRARY_PATH="/opt/llama:/opt/llama/lib:/opt/llama/bin"
 
 RUN mkdir -p /opt/llama \
     && curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
@@ -56,9 +54,10 @@ RUN mkdir -p /opt/llama \
     && LLAMA_SERVER="$(find /opt/llama -type f -name llama-server -print -quit)" \
     && test -n "${LLAMA_SERVER}" \
     && cp "${LLAMA_SERVER}" /opt/llama-server \
+    && find /opt/llama -mindepth 2 -type f -name '*.so*' -exec cp -a {} /opt/llama/ \; \
     && chmod +x /opt/llama-server
 
-RUN /opt/llama-server --version
+RUN LD_LIBRARY_PATH="/opt/llama:/opt/llama/lib:/opt/llama/bin" /opt/llama-server --version
 
 # ============================================================
 # Stage 3: Qwen3.5-0.8B Q4_K_M GGUF
@@ -88,8 +87,6 @@ WORKDIR /app
 
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
-
-# llama.cpp server and its shared libraries.
 COPY --from=llama-builder /opt/llama/ /opt/llama/
 COPY --from=llama-builder /opt/llama-server /app/llama-server
 
@@ -104,7 +101,7 @@ RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher
 
-ENV LD_LIBRARY_PATH="/opt/llama:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/llama:/opt/llama/lib:/opt/llama/bin"
 
 EXPOSE 8080
 
