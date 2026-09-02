@@ -45,6 +45,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ARG LLAMA_TAG=b10516
+ENV LD_LIBRARY_PATH="/opt/llama:${LD_LIBRARY_PATH}"
 
 RUN mkdir -p /opt/llama \
     && curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
@@ -102,6 +103,8 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts/model_supervisor.sh /entrypoint.sh \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher
+
+ENV LD_LIBRARY_PATH="/opt/llama:${LD_LIBRARY_PATH}"
 
 EXPOSE 8080
 
