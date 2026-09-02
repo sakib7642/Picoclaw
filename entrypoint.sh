@@ -6,13 +6,14 @@ MODEL_HOST="${LOCAL_MODEL_HOST:-127.0.0.1}"
 MODEL_PORT="${LOCAL_MODEL_PORT:-8000}"
 ROUTER_HOST="${ROUTER_HOST:-127.0.0.1}"
 ROUTER_PORT="${ROUTER_PORT:-8100}"
-MODEL_PATH="/app/models/Qwen_Qwen3.5-0.8B-IQ2_M.gguf"
+MODEL_PATH="/app/models/SmolVLM-256M-Instruct-Q8_0.gguf"
+MMPROJ_PATH="/app/models/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf"
 PICO_HOME="/root/.picoclaw"
 CONFIG_SOURCE="/config/config.json"
 CONFIG_PATH="${PICO_HOME}/config.json"
 
 printf '%s\n' '=================================================='
-printf '%s\n' ' PicoClaw WebUI + Qwen3.5 local model + router'
+printf '%s\n' ' PicoClaw WebUI + SmolVLM-256M multimodal + router'
 printf ' UTC: %s\n' "$(date -u)"
 printf ' Public WebUI port: %s\n' "${PORT}"
 printf ' Router API: %s:%s\n' "${ROUTER_HOST}" "${ROUTER_PORT}"
@@ -21,16 +22,17 @@ printf '%s\n' '=================================================='
 
 mkdir -p "${PICO_HOME}/workspace" "${PICO_HOME}/logs"
 
-if [ ! -f "${CONFIG_PATH}" ] && [ -f "${CONFIG_SOURCE}" ]; then
-    cp "${CONFIG_SOURCE}" "${CONFIG_PATH}"
-fi
+# Always install the bundled deployment config so a sleeping Render instance
+# cannot keep a stale previous model configuration on its ephemeral disk.
+cp "${CONFIG_SOURCE}" "${CONFIG_PATH}"
 
 export PICOCLAW_BINARY="/app/picoclaw"
+export LOCAL_MODEL_ID="${LOCAL_MODEL_ID:-smolvlm-256m}"
 
 printf '%s\n' '--- binaries ---'
 ls -lh /app/picoclaw /app/picoclaw-launcher /app/llama-server
-printf '%s\n' '--- local model ---'
-ls -lh "${MODEL_PATH}"
+printf '%s\n' '--- local multimodal model ---'
+ls -lh "${MODEL_PATH}" "${MMPROJ_PATH}"
 printf '%s\n' '--- PicoClaw version ---'
 /app/picoclaw version || true
 printf '%s\n' '--- llama.cpp version ---'
@@ -48,17 +50,17 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-# Do not expose the public WebUI until the local model is genuinely ready.
+# Do not expose the public WebUI until the local multimodal model is genuinely ready.
 i=0
 while ! curl -fsS "http://${MODEL_HOST}:${MODEL_PORT}/health" >/dev/null 2>&1; do
     i=$((i + 1))
     if [ "${i}" -ge 300 ]; then
-        echo 'ERROR: Qwen3.5 local model did not become healthy within 300s.' >&2
+        echo 'ERROR: SmolVLM-256M local model did not become healthy within 300s.' >&2
         exit 1
     fi
     sleep 1
 done
-echo 'Qwen3.5 local model: healthy'
+echo 'SmolVLM-256M local model: healthy'
 
 # Wait for the router as well.
 i=0
