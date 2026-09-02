@@ -5,21 +5,21 @@
       "workspace": "/root/.picoclaw/workspace",
       "restrict_to_workspace": true,
       "max_tokens": 192,
-      "context_window": 512,
-      "temperature": 0.7,
+      "context_window": 4096,
+      "temperature": 0.4,
       "max_tool_iterations": 6,
       "max_parallel_turns": 1,
-      "model_name": "qwen3.5-0.8b"
+      "model_name": "smolvlm-256m"
     }
   },
   "model_list": [
     {
-      "model_name": "qwen3.5-0.8b",
+      "model_name": "smolvlm-256m",
       "provider": "openai",
-      "model": "qwen3.5-0.8b",
+      "model": "smolvlm-256m",
       "api_base": "http://127.0.0.1:8100/v1",
       "api_keys": ["local-router"],
-      "request_timeout": 240,
+      "request_timeout": 300,
       "enabled": true
     }
   ],
