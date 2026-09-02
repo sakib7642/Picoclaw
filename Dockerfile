@@ -92,22 +92,25 @@ RUN apt-get update \
 
 WORKDIR /app
 
+ENV LD_LIBRARY_PATH="/app/llama-bin"
+
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
-COPY --from=llama-builder /src/llama.cpp/build/bin/llama-server /app/llama-server
+# llama.cpp's server is dynamically linked; copy its companion .so files too.
+COPY --from=llama-builder /src/llama.cpp/build/bin/ /app/llama-bin/
 COPY --from=model-downloader /models/MobileLLM-376M-Q4_K_S.gguf /app/models/MobileLLM-376M-Q4_K_S.gguf
 
 COPY config/ /config/
 COPY scripts/ /app/scripts/
 COPY entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server \
+RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-bin/llama-server \
         /app/scripts/model_supervisor.sh /app/scripts/router_supervisor.sh \
         /app/scripts/auth_bootstrap.sh /app/scripts/model_router.py /entrypoint.sh \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher \
-    && ln -sf /app/llama-server /usr/local/bin/llama-server \
-    && /app/llama-server --version
+    && ln -sf /app/llama-bin/llama-server /usr/local/bin/llama-server \
+    && /app/llama-bin/llama-server --version
 
 EXPOSE 8080
 
