@@ -6,7 +6,7 @@ MODEL_HOST="${LOCAL_MODEL_HOST:-127.0.0.1}"
 MODEL_PORT="${LOCAL_MODEL_PORT:-8000}"
 ROUTER_HOST="${ROUTER_HOST:-127.0.0.1}"
 ROUTER_PORT="${ROUTER_PORT:-8100}"
-MODEL_PATH="/app/models/MobileLLM-350M-Q4_K_S.gguf"
+MODEL_PATH="/app/models/MobileLLM-376M-Q4_K_S.gguf"
 PICO_HOME="/root/.picoclaw"
 CONFIG_SOURCE="/config/config.json"
 CONFIG_PATH="${PICO_HOME}/config.json"
@@ -48,8 +48,7 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-# Always wait for the local fallback to be genuinely ready. This prevents the
-# first user request from racing the model load when no hosted key is present.
+# Do not expose the public WebUI until the local fallback is genuinely ready.
 i=0
 while ! curl -fsS "http://${MODEL_HOST}:${MODEL_PORT}/health" >/dev/null 2>&1; do
     i=$((i + 1))
@@ -77,6 +76,7 @@ echo 'Intelligent model router: healthy'
 
 echo 'Starting official PicoClaw WebUI launcher...'
 while :; do
+    status=0
     /app/picoclaw-launcher \
         -host 0.0.0.0 \
         -port "${PORT}" \
@@ -84,8 +84,6 @@ while :; do
         -no-browser \
         "${CONFIG_PATH}" || status=$?
 
-    status="${status:-0}"
     echo "[Launcher-Supervisor] launcher exited with code ${status}; restarting in 2s" >&2
-    unset status
     sleep 2
 done
