@@ -6,7 +6,7 @@ MODEL_HOST="${LOCAL_MODEL_HOST:-127.0.0.1}"
 MODEL_PORT="${LOCAL_MODEL_PORT:-8000}"
 ROUTER_HOST="${ROUTER_HOST:-127.0.0.1}"
 ROUTER_PORT="${ROUTER_PORT:-8100}"
-MODEL_PATH="/app/models/MobileLLM-376M-Q4_K_M.gguf"
+MODEL_PATH="/app/models/MobileLLM-350M-Q4_K_S.gguf"
 PICO_HOME="/root/.picoclaw"
 CONFIG_SOURCE="/config/config.json"
 CONFIG_PATH="${PICO_HOME}/config.json"
@@ -48,7 +48,20 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-# Hosted providers are primary; local MobileLLM is only a last-resort fallback.
+# Always wait for the local fallback to be genuinely ready. This prevents the
+# first user request from racing the model load when no hosted key is present.
+i=0
+while ! curl -fsS "http://${MODEL_HOST}:${MODEL_PORT}/health" >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "${i}" -ge 240 ]; then
+        echo 'ERROR: MobileLLM local fallback did not become healthy within 240s.' >&2
+        exit 1
+    fi
+    sleep 1
+done
+echo 'MobileLLM local fallback: healthy'
+
+# Wait for the router as well.
 i=0
 while ! curl -fsS "http://${ROUTER_HOST}:${ROUTER_PORT}/health" >/dev/null 2>&1; do
     i=$((i + 1))
