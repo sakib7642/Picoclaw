@@ -1,5 +1,5 @@
 # ============================================================
-# Stage 1: Build the latest released PicoClaw + WebUI launcher
+# Stage 1: Build PicoClaw + official WebUI launcher
 # ============================================================
 FROM node:22.20-bookworm AS picoclaw-builder
 
@@ -24,12 +24,15 @@ RUN npm install -g "pnpm@${PNPM_VERSION}" \
     && go version
 
 WORKDIR /src/picoclaw
-# Automatically select the newest released v* tag at build time.
-RUN LATEST_TAG="$(git ls-remote --tags --sort='-v:refname' https://github.com/sipeed/picoclaw.git 'refs/tags/v*' \
-        | sed -n 's#.*refs/tags/\(v[0-9][^{}]*\)$#\1#p' | head -n 1)" \
-    && test -n "${LATEST_TAG}" \
-    && echo "Building PicoClaw ${LATEST_TAG}" \
-    && git clone --depth 1 --branch "${LATEST_TAG}" https://github.com/sipeed/picoclaw.git .
+
+# The small release marker is updated automatically by GitHub Actions when
+# a newer PicoClaw release appears. This makes every build reproducible while
+# still allowing unattended version bumps.
+COPY .picoclaw-release /tmp/picoclaw-release
+RUN PICOCLAW_VERSION="$(cat /tmp/picoclaw-release)" \
+    && test -n "${PICOCLAW_VERSION}" \
+    && echo "Building PicoClaw ${PICOCLAW_VERSION}" \
+    && git clone --depth 1 --branch "${PICOCLAW_VERSION}" https://github.com/sipeed/picoclaw.git .
 
 RUN cd web/frontend \
     && pnpm install --frozen-lockfile
@@ -39,29 +42,34 @@ RUN make build-launcher
 RUN test -x build/picoclaw && test -x build/picoclaw-launcher
 
 # ============================================================
-# Stage 2: llama.cpp CPU server (OpenAI-compatible)
+# Stage 2: Build current llama.cpp CPU server
 # ============================================================
 FROM debian:bookworm-slim AS llama-builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tar grep findutils libgomp1 \
+    && apt-get install -y --no-install-recommends ca-certificates git cmake build-essential python3 curl \
     && rm -rf /var/lib/apt/lists/*
 
-ARG LLAMA_TAG=b10695
+WORKDIR /src/llama.cpp
 
-RUN mkdir -p /opt/llama \
-    && curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
-       "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_TAG}/llama-${LLAMA_TAG}-bin-ubuntu-x64.tar.gz" \
-       -o /tmp/llama.tgz \
-    && tar -xzf /tmp/llama.tgz -C /opt/llama \
-    && rm -f /tmp/llama.tgz \
-    && LLAMA_SERVER="$(find /opt/llama -type f -name llama-server -print -quit)" \
-    && test -n "${LLAMA_SERVER}" \
-    && LIB_PATHS="$(find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u | tr '\\n' ':')" \
-    && LD_LIBRARY_PATH="${LIB_PATHS}:/opt/llama" "${LLAMA_SERVER}" --version
+# Qwen3.5 support landed in llama.cpp during 2026. Build current master so
+# the bundled server is never stuck on an old release that cannot parse Qwen3.5.
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git . \
+    && cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_NATIVE=OFF \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF \
+        -DLLAMA_BUILD_TOOLS=ON \
+        -DLLAMA_BUILD_SERVER=ON \
+        -DLLAMA_BUILD_APP=OFF \
+        -DLLAMA_BUILD_WEBUI=OFF \
+    && cmake --build build --config Release --target llama-server -j 2 \
+    && test -x build/bin/llama-server \
+    && build/bin/llama-server --version
 
 # ============================================================
-# Stage 3: Qwen3.5-0.8B Q4_K_M GGUF
+# Stage 3: Qwen3.5-0.8B very-small CPU quantization
 # ============================================================
 FROM debian:bookworm-slim AS model-downloader
 
@@ -70,10 +78,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /models
+
+# IQ2_M is intentionally selected for Render Free's 512 MB runtime. The
+# larger Q4_K_M build leaves too little RAM for llama-server + context.
 RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
-    -o Qwen3.5-0.8B.Q4_K_M.gguf \
-    "https://huggingface.co/mradermacher/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B.Q4_K_M.gguf" \
-    && test -s Qwen3.5-0.8B.Q4_K_M.gguf
+    -o Qwen3.5-0.8B-IQ2_M.gguf \
+    "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-IQ2_M.gguf" \
+    && test -s Qwen3.5-0.8B-IQ2_M.gguf
 
 # ============================================================
 # Stage 4: Runtime - official PicoClaw WebUI + Gateway + Qwen
@@ -81,37 +92,32 @@ RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
 FROM python:3.12-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tzdata findutils libgomp1 \
+    && apt-get install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
-COPY --from=llama-builder /opt/llama/ /opt/llama/
+COPY --from=llama-builder /src/llama.cpp/build/bin/llama-server /app/llama-server
 
 RUN mkdir -p /app/models
-COPY --from=model-downloader /models/Qwen3.5-0.8B.Q4_K_M.gguf /app/models/Qwen3.5-0.8B.Q4_K_M.gguf
+COPY --from=model-downloader /models/Qwen3.5-0.8B-IQ2_M.gguf /app/models/Qwen3.5-0.8B-IQ2_M.gguf
 
 COPY config/ /config/
 COPY scripts/ /app/scripts/
 COPY entrypoint.sh /entrypoint.sh
 
-# Keep llama-server next to its bundled shared libraries so its own
-# relative library lookup continues to work.
-RUN LLAMA_SERVER="$(find /opt/llama -type f -name llama-server -print -quit)" \
-    && test -n "${LLAMA_SERVER}" \
-    && ln -sf "${LLAMA_SERVER}" /app/llama-server \
-    && find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u > /etc/ld.so.conf.d/llama.conf \
-    && ldconfig \
-    && chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts/model_supervisor.sh /entrypoint.sh \
+RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server \
+        /app/scripts/model_supervisor.sh /entrypoint.sh \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher \
+    && ln -sf /app/llama-server /usr/local/bin/llama-server \
     && /app/llama-server --version
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD /bin/sh -c 'curl -fsS "http://127.0.0.1:${PORT:-8080}/" >/dev/null || exit 1'
 
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
