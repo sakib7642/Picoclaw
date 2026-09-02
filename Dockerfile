@@ -24,10 +24,6 @@ RUN npm install -g "pnpm@${PNPM_VERSION}" \
     && go version
 
 WORKDIR /src/picoclaw
-
-# The small release marker is updated automatically by GitHub Actions when
-# a newer PicoClaw release appears. This makes every build reproducible while
-# still allowing unattended version bumps.
 COPY .picoclaw-release /tmp/picoclaw-release
 RUN PICOCLAW_VERSION="$(cat /tmp/picoclaw-release)" \
     && test -n "${PICOCLAW_VERSION}" \
@@ -42,7 +38,7 @@ RUN make build-launcher
 RUN test -x build/picoclaw && test -x build/picoclaw-launcher
 
 # ============================================================
-# Stage 2: Build current llama.cpp CPU server
+# Stage 2: Build llama.cpp CPU server
 # ============================================================
 FROM debian:bookworm-slim AS llama-builder
 
@@ -51,9 +47,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src/llama.cpp
-
-# Qwen3.5 support landed in llama.cpp during 2026. Build current master so
-# the bundled server is never stuck on an old release that cannot parse Qwen3.5.
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git . \
     && cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
@@ -69,7 +62,7 @@ RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git . \
     && build/bin/llama-server --version
 
 # ============================================================
-# Stage 3: Qwen3.5-0.8B very-small CPU quantization
+# Stage 3: Very-small Facebook/Meta MobileLLM fallback
 # ============================================================
 FROM debian:bookworm-slim AS model-downloader
 
@@ -79,15 +72,16 @@ RUN apt-get update \
 
 WORKDIR /models
 
-# IQ2_M is intentionally selected for Render Free's 512 MB runtime. The
-# larger Q4_K_M build leaves too little RAM for llama-server + context.
+# MobileLLM-350M is used only as the last-resort local model. Q4_K_M is
+# about 273 MB, leaving substantially more RAM than the previous Qwen build.
+# The GGUF is a conversion of Meta's facebook/MobileLLM-350M weights.
 RUN curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors \
-    -o Qwen3.5-0.8B-IQ2_M.gguf \
-    "https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-IQ2_M.gguf" \
-    && test -s Qwen3.5-0.8B-IQ2_M.gguf
+    -o MobileLLM-350M.Q4_K_M.gguf \
+    "https://huggingface.co/pjh64/MobileLLM-350M-GGUF/resolve/main/MobileLLM-350M.Q4_K_M.gguf" \
+    && test -s MobileLLM-350M.Q4_K_M.gguf
 
 # ============================================================
-# Stage 4: Runtime - official PicoClaw WebUI + Gateway + Qwen
+# Stage 4: Runtime - official PicoClaw WebUI + OmniRouter + local fallback
 # ============================================================
 FROM python:3.12-slim
 
@@ -100,16 +94,15 @@ WORKDIR /app
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw /app/picoclaw
 COPY --from=picoclaw-builder /src/picoclaw/build/picoclaw-launcher /app/picoclaw-launcher
 COPY --from=llama-builder /src/llama.cpp/build/bin/llama-server /app/llama-server
-
-RUN mkdir -p /app/models
-COPY --from=model-downloader /models/Qwen3.5-0.8B-IQ2_M.gguf /app/models/Qwen3.5-0.8B-IQ2_M.gguf
+COPY --from=model-downloader /models/MobileLLM-350M.Q4_K_M.gguf /app/models/MobileLLM-350M.Q4_K_M.gguf
 
 COPY config/ /config/
 COPY scripts/ /app/scripts/
 COPY entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server \
-        /app/scripts/model_supervisor.sh /entrypoint.sh \
+        /app/scripts/model_supervisor.sh /app/scripts/router_supervisor.sh \
+        /app/scripts/auth_bootstrap.sh /app/scripts/model_router.py /entrypoint.sh \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher \
     && ln -sf /app/llama-server /usr/local/bin/llama-server \
