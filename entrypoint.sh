@@ -27,7 +27,8 @@ mkdir -p "${PICO_HOME}/workspace" "${PICO_HOME}/logs"
 cp "${CONFIG_SOURCE}" "${CONFIG_PATH}"
 
 export PICOCLAW_BINARY="/app/picoclaw"
-export LOCAL_MODEL_ID="${LOCAL_MODEL_ID:-smolvlm-256m}"
+# Force the router fallback to the model actually bundled in this image.
+export LOCAL_MODEL_ID="smolvlm-256m"
 
 printf '%s\n' '--- binaries ---'
 ls -lh /app/picoclaw /app/picoclaw-launcher /app/llama-server
