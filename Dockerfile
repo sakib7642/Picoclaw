@@ -1,9 +1,10 @@
 # ============================================================
-# Stage 1: Build the latest official PicoClaw + WebUI launcher
+# Stage 1: Build the latest released PicoClaw + WebUI launcher
 # ============================================================
 FROM node:22.20-bookworm AS picoclaw-builder
 
 ARG GO_VERSION=1.25.11
+ARG PNPM_VERSION=11.25.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git make gcc g++ python3 \
@@ -18,13 +19,17 @@ ENV PATH="/usr/local/go/bin:/go/bin:${PATH}" \
     GOPATH="/go" \
     GOTOOLCHAIN="local"
 
-RUN npm install -g pnpm@10.33.0 \
+RUN npm install -g "pnpm@${PNPM_VERSION}" \
     && pnpm --version \
     && go version
 
 WORKDIR /src/picoclaw
-# No version pin: every fresh Render build uses the current official main branch.
-RUN git clone --depth 1 https://github.com/sipeed/picoclaw.git .
+# Automatically select the newest released v* tag at build time.
+RUN LATEST_TAG="$(git ls-remote --tags --sort='-v:refname' https://github.com/sipeed/picoclaw.git 'refs/tags/v*' \
+        | sed -n 's#.*refs/tags/\(v[0-9][^{}]*\)$#\1#p' | head -n 1)" \
+    && test -n "${LATEST_TAG}" \
+    && echo "Building PicoClaw ${LATEST_TAG}" \
+    && git clone --depth 1 --branch "${LATEST_TAG}" https://github.com/sipeed/picoclaw.git .
 
 RUN cd web/frontend \
     && pnpm install --frozen-lockfile
@@ -94,7 +99,6 @@ COPY config/ /config/
 COPY scripts/ /app/scripts/
 COPY entrypoint.sh /entrypoint.sh
 
-# Register every directory containing llama.cpp shared libraries with ldconfig.
 RUN find /opt/llama -type f -name '*.so*' -printf '%h\\n' | sort -u > /etc/ld.so.conf.d/llama.conf \
     && ldconfig \
     && chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts/model_supervisor.sh /entrypoint.sh \
