@@ -110,6 +110,7 @@ RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-bin/llama-server \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher \
     && ln -sf /app/llama-bin/llama-server /usr/local/bin/llama-server \
+    && ln -sf /app/llama-bin/llama-server /app/llama-server \
     && /app/llama-bin/llama-server --version
 
 EXPOSE 8080
