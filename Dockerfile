@@ -96,9 +96,10 @@ RUN mkdir -p /app/models
 COPY --from=model-downloader /models/Qwen3.5-0.8B.Q4_K_M.gguf /app/models/Qwen3.5-0.8B.Q4_K_M.gguf
 
 COPY config/ /config/
+COPY scripts/ /app/scripts/
 COPY entrypoint.sh /entrypoint.sh
 
-RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /entrypoint.sh \
+RUN chmod +x /app/picoclaw /app/picoclaw-launcher /app/llama-server /app/scripts/model_supervisor.sh /entrypoint.sh \
     && ln -sf /app/picoclaw /usr/local/bin/picoclaw \
     && ln -sf /app/picoclaw-launcher /usr/local/bin/picoclaw-launcher
 
